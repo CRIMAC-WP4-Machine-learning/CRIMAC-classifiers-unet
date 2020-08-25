@@ -10,7 +10,7 @@ from batch.data_transform_functions.db_with_limits import db_with_limits
 
 import utils.plotting
 plt = utils.plotting.setup_matplotlib()  # Returns import matplotlib.pyplot as plt
-
+import pdb
 # Create segmentation from trained segmentation model (e.g. U-Net)
 from predict._frameworks_Olav import get_prediction_function
 
@@ -100,7 +100,7 @@ def post_processing(seg, ech):
     return seg
 
 
-def get_segmentation_sandeel(model, ech, freqs):
+def get_segmentation_sandeel(model, ech, freqs, device):
 
     patch_size = 256
     patch_overlap = 20
@@ -165,7 +165,7 @@ def get_sandeel_probs_object_pathces(model, echs, freqs, n_echs, extend_size):
             break
 
         # Get binary segmentation (probability of sandeel) and labels (-1=ignore, 0=background, 1=sandeel, 2=other)
-        seg, labels = get_segmentation_sandeel(model, ech, freqs)
+        seg, labels = get_segmentation_sandeel(model, ech, freqs, device)
 
         # Get evaluation mask, i.e. the pixels to be evaluated
         eval_mask = get_extended_label_mask_for_echogram(ech, extend_size)
@@ -210,7 +210,7 @@ def get_sandeel_probs(model, echs, freqs, mode, n_echs):
             break
 
         # Get binary segmentation (probability of sandeel) and labels (-1=ignore, 0=background, 1=sandeel, 2=other)
-        seg, labels = get_segmentation_sandeel(model, ech, freqs)
+        seg, labels = get_segmentation_sandeel(model, ech, freqs, device)
 
         # Store sandeel predictions per pixel in list [0] (negatives) or [1] (positives) based on label.
         if mode == "all":
@@ -275,7 +275,7 @@ def plot_echograms_with_sandeel_prediction(year, device, path_model_params, igno
             print(i, ech.name)
 
             # Get binary segmentation (probability of sandeel) and labels (-1=ignore, 0=background, 1=sandeel, 2=other)
-            seg, labels = get_segmentation_sandeel(model, ech, freqs)
+            seg, labels = get_segmentation_sandeel(model, ech, freqs, device)
 
             if ignore_mode == 'region':
                 # Get evaluation mask, i.e. the pixels to be evaluated
