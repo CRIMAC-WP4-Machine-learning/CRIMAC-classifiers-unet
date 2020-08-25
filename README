@@ -19,6 +19,15 @@ set-variable -name DISPLAY -value 10.1.83.116:0.0
 # \datain\ should be mapped to the data directory where the memmap files
 # \model\ should be mapped to the directory where the model weights are stored
 # \dataout\ should be mapped to the directory where the memmap files are located
-docker run -it --name crimacwp4-unet -p 8989:8989 -v D:\DATA\LSSS-label-versioning\S2016837\ACOUSTIC\LSSS\WORK\:/datawork/ -v D:\DATA\LSSS-label-versioning\S2017838\ACOUSTIC\memmap:/datain/ --rm -v D:\repos\Github\acoustic_private:/acoustic_private/ -e DISPLAY=$DISPLAY crimacwp4-unet:test
+docker run -it --name crimacwp4-unet -p 8989:8989 -v D:\DATA\LSSS-label-versioning\S2016837\ACOUSTIC\LSSS\WORK\:/datawork/ -v D:\DATA\LSSS-label-versioning\S2017838\ACOUSTIC\memmap:/datain/ -e DISPLAY=$DISPLAY crimacwp4-unet:test
+
+# List containers
+docker ps --all
+
+# Remoce a container
+docker container prune
+
+# Enter a running container
+docker exec -it <id> zsh
 
 
