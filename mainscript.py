@@ -1,16 +1,21 @@
 import json
+import setpaths
+import segmentation2nd
+import torch
+import numpy as np
+import random
 
+np.random.seed(5)
+random.seed(5)
+device = torch.device("cuda:3" if torch.cuda.is_available() else "cpu")
+path_model_params = '/model/paper_v2_heave_2.pt'
+
+### Uncomment and run script ###
+segmentation2nd.plot_echograms_with_sandeel_prediction(
+    year=2016, device=device,
+    path_model_params=path_model_params, ignore_mode='normal')
 
 # Set parameters
-data = {"scratch": "/datain/",
-        "syspath": "/workspace/acoustic_private/",
-        "path_to_echograms": "/datain/"}
-
 # Write parameters
-data_set = {"key1": [1, 2, 3], "key2": [4, 5, 6]}
-# Write to file
-with open('setpyenv.json', 'w', encoding='utf-8') as f:
-    json.dump(data, f, ensure_ascii=False, indent=4)
-
 
 # Run the predictions
