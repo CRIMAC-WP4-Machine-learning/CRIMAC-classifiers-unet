@@ -8,10 +8,14 @@ git clone https://github.com/nilsolav/LSSS-label-versioning
 # The raw data have to be copied from pallas: /scratch/nilsolav
 
 # Build the docker image
+# Locally
 docker build --tag crimacwp4-unet:test .
+# Pallas
+podman build --tag crimacwp4-unet:pallas .
 
 # Set the display variable (replace with your IP)
 set-variable -name DISPLAY -value 10.1.83.116:0.0
+export DISPLAY=10.1.83.116:0.0
 
 # Generate and run the container. The -v flag should point to the memmap files
 # system, and the -p flag should be the port for the jupyter-notebook.
@@ -20,8 +24,20 @@ set-variable -name DISPLAY -value 10.1.83.116:0.0
 # \model\ should be mapped to the directory where the model weights are stored
 # \datawork\ should be mapped to the directory where the workfiles are located
 
-
+# Locally
 docker run -it --name crimacwp4-unet -p 8989:8989 -v D:\DATA\LSSS-label-versioning\S2016837\ACOUSTIC\LSSS\WORK\:/datawork/ -v D:\DATA\LSSS-label-versioning\S2016837\ACOUSTIC\memmap:/datain/ -v D:\DATA\LSSS-label-versioning\modelweights:/model/ -e DISPLAY=$DISPLAY crimacwp4-unet:test
+
+# Pallas
+podman run -it --userns=host --group-add=nilsolav --security-opt=label=disable --hooks-dir /usr/share/containers/oci/hooks.d -v /scratch/nilsolav/containers/storage/:/model:z -v /scratch/nilsolav/deep/data/echosounder_scratch/akustikk_all/North Sea NOR Sandeel cruise in Apr_May_17082019/memmap/:/datain:z -v '/scratch/nilsolav/deep/data/echosounder_scratch/akustikk_all/North Sea NOR Sandeel cruise in Apr_May_17082019/memmap/':/datawork:z -e DISPLAY=$DISPLAY crimacwp4-unet:pallas crimacwp4-unet:pallas
+
+
+podman run -it --userns=host --group-add=nilsolav --security-opt=label=disable --hooks-dir /usr/share/containers/oci/hooks.d -v /scratch/nilsolav/containers/storage/:/model:z -v /scratch/nilsolav/deep/data/echosounder_scratch/akustikk_all/:/datain:z -v /scratch/nilsolav/deep/data/echosounder_scratch/akustikk_all/:/datawork:z -e DISPLAY=$DISPLAY crimacwp4-unet:pallas crimacwp4-unet:pallas bash
+
+
+podman run -it --security-opt=label=disable --group-add=nilsolav --hooks-dir /usr/share/containers/oci/hooks.d -v /scratch/nilsolav/containers/storage/:/model:z -e DISPLAY=$DISPLAY crimacwp4-unet:pallas crimacwp4-unet:pallas bash
+
+podman run -it --userns=host --security-opt=label=disable --hooks-dir /usr/share/containers/oci/hooks.d -e DISPLAY=$DISPLAY -v /scratch/nilsolav/deep/data/echosounder_scratch/akustikk_all/North\ Sea\ NOR\ Sandeel\ cruise\ in\ Apr_May_17082019/:/model:z crimacwp4-unet:pallas bash
+
 
 # List containers
 docker ps --all
