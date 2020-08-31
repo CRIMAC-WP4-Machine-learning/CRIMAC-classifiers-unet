@@ -12,7 +12,7 @@ RUN sh -c "$(curl -fsSL https://raw.github.com/ohmyzsh/ohmyzsh/master/tools/inst
 
 # Install pip and python packages
 RUN pip install --upgrade pip
-RUN pip install numpy scipy matplotlib pdb google
+RUN pip install numpy scipy matplotlib pdb google h5py
 
 # Clone the libraries & copy config
 RUN cd /
