@@ -12,7 +12,7 @@ np.random.seed(5)
 random.seed(5)
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 path_model_params = '/model/paper_v2_heave_2.pt'
-datawork = '/datawork/'
+ncfile = '/datawork/'
 
 # generate_and_save_heave_files()
 
@@ -23,7 +23,8 @@ datawork = '/datawork/'
 
 segmentation2nd.write_predictions(
     year=2016, device=device,
-    path_model_params=path_model_params, ignore_mode='normal', workdir=datawork)
+    path_model_params=path_model_params,
+    ignore_mode='normal', ncfile=ncfile)
 
 
 

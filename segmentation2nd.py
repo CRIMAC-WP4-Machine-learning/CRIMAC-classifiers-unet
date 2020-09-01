@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 import random
-
+import pickle
 from models.unet_bn_sequential_db import UNet
 from data.echogram import get_echograms
 from batch.label_transform_functions.index_0_1_27 import index_0_1_27
@@ -229,29 +229,8 @@ def get_sandeel_probs(model, echs, freqs, mode, n_echs):
     return _sandeel_probs
 
 
-def get_pr_curve(sandeel_probs, n_thresholds=200):
-
-    # Get list of threshold values to compute p/r, adjusted to give evenly-ish distributed points on the p/r curve
-    val_range = np.linspace(-20, 20, n_thresholds, endpoint=False)
-    val_range = 1 / (1 + np.exp(-0.4 * (val_range + 3)))
-    assert (np.min(val_range) >= 0) and (np.max(val_range) <= 1)
-
-    pr_curve = []
-    for value in val_range:
-
-        tp = np.sum(sandeel_probs[1] >= value)
-        fp = np.sum(sandeel_probs[0] >= value)
-        fn = np.sum(sandeel_probs[1] < value)
-        #tn = np.sum(sandeel_probs[0] < value)
-
-        precision = tp / (tp + fp) if tp + fp != 0 else 1.0
-        recall = tp / (tp + fn) if tp + fn != 0 else 1.0
-        pr_curve.append([recall, precision])
-
-    return np.array(pr_curve)
-
-
-def plot_echograms_with_sandeel_prediction(year, device, path_model_params, ignore_mode='normal'):
+def plot_echograms_with_sandeel_prediction(year, device, path_model_params,
+                                           ignore_mode='normal'):
 
     # ignore_mode == 'normal': difference between original and modified labels are changed to 'ignore'
     # ignore_mode == 'region': in addition to 'normal' mode, label 'background' is changed to 'ignore' outside of region around labeled schools
@@ -303,240 +282,47 @@ def plot_echograms_with_sandeel_prediction(year, device, path_model_params, igno
                 show_freqs=True
             )
 
-def write_predictions(year, device, path_model_params, ignore_mode='normal', workdir='/datawork/'):
 
-    # ignore_mode == 'normal': difference between original and modified labels are changed to 'ignore'
-    # ignore_mode == 'region': in addition to 'normal' mode, label 'background' is changed to 'ignore' outside of region around labeled schools
+def write_predictions(year, device, path_model_params,
+                      ignore_mode='normal', ncfile='/datawork/work.nc'):
+
+    # ignore_mode == 'normal': difference between original and modified
+    #                labels are changed to 'ignore'
+    # ignore_mode == 'region': in addition to 'normal' mode, label 'background'
+    #          is changed to 'ignore' outside of region around labeled schools
 
     assert ignore_mode in ['normal', 'region']
     freqs = [18, 38, 120, 200]
     echograms_all = get_echograms(frequencies=freqs)
-    years_all = [2007, 2008, 2009, 2010, 2011, 2013, 2014, 2015, 2016, 2017, 2018]
-    echograms_year = {y: [ech for ech in echograms_all if ech.year == y] for y in years_all}
+    years_all = [2007, 2008, 2009, 2010, 2011, 2013,
+                 2014, 2015, 2016, 2017, 2018]
+    echograms_year = {y: [ech for ech in echograms_all
+                          if ech.year == y] for y in years_all}
     echs = echograms_year[year]
     with torch.no_grad():
 
         model = UNet(n_classes=3, in_channels=4)
         model.to(device)
-        model.load_state_dict(torch.load(path_model_params, map_location=device))
+        model.load_state_dict(torch.load(path_model_params,
+                                         map_location=device))
         model.eval()
 
-        # ncfile = datawork+''
+        # Open ncfile
+
+        # Predict
         for i, ech in enumerate(echs):
             print(i, ech.name)
-
-            # Get binary segmentation (probability of sandeel) and labels (-1=ignore, 0=background, 1=sandeel, 2=other)
+            
+            # Get binary segmentation (probability of sandeel) and labels
+            # (-1=ignore, 0=background, 1=sandeel, 2=other)
             seg, labels = get_segmentation_sandeel(model, ech, freqs, device)
-            # Write NC file
-            
-            pdb.set_trace()
-
-
-def createncfile(ncfile):
-
-
-#// simple example regions
-    #region_dimension = 'twoD'
-    #sound_speed = 1496
-    #min_depth =  [0.0, 20.5, 55.0]
-    #max_depth = [10.0, 42.0, 125.2]
-    #start_time = [13189164120001, 13189164121000, 13189164124000]
-    #end_time =   [13189164123004, 13189164124000, 13189164131000]
-    #region_id = [1, 5, 234]
-    #region_name = "region1", "region2", "";
-    #region_provenance = "KORONA-2.6.0;LSSS", "Echoview - template ABC", "Manual inspection";
-    #region_comment = "", "", "whale!";
-    #region_category_names = "herring", "krill", "seal", "lion", "platypus";
-    #region_category_proportions = [0.9, 0.1, 0.45, 0.40, 0.10]
-    #region_category_ids = [1, 1, 234, 234, 234]
-    #region_type = analysis, empty_water, analysis;
-    #channel_names = "18kHz WBT ABC", "38kHz WBT ZYX", "120kHz GPT 123";
-    #region_channels = [5, 7, 7]
-    #mask_times = {13189164120001, 13189164121002, 13189164122003, 13189164123004}, {13189164121000, 13189164122000, 13189164123000, 13189164124000}, {13189164124000, 13189164125000, 13189164126000, 13189164127000, 13189164128000, 13189164129000, 13189164131000}
-    #mask_depths = {[0.0, 15.0], [0.0, 4.0, 5.0, 10.0], [0.0, 10.0], [0.0, 10.0]}, {[20.5, 25.0], [30.5, 35.0], [35.5, 40.0], [40.0, 42.0]}, {[55.0, 105.0], [60.0, 80.2, 100.6, 115.0], [55.0, 107.0], [55.0, 110.0], [55.0, 115.6], [55.0, 125.2], [60, 115]}
-
-
-#netcdf mask {
-    #	:date_created = "20190819T134900Z";
-    #	:mask_convention_version = "0.1";
-    #	:mask_convention_name = "SONAR-netCDF4";
-    #	:mask_convention_authority = "ICES, IMR";
-    #	:rights = "Unrestricted rights";
-    #	:license = "CC-BY 4.0";
-    #	:Conventions = "CF-1.7, ACDD-1.3, SONAR-netCDF4-2.0";
-    #	:keywords = "scrutinisation mask, echosounder";
-    #	:summary = "Contains definitions of echogram scrutiny masks";
-    #    :title = "Echogram scrutiny masks";
-
-    f = h5py.File("demo_mask.hdf5", "a")
-    dset = f.create_group("Interpretation")
-    #group: Interpretation {
-    #	group: v1 { // subsequent versions of this interpretation get put in new subgroups, using the numbering system v1, v2, etc.
-    dset = f.create_group("Interpretation/v1")
-    #		// SUGGESTIONS OF THINGS TO ADD:
-    #		// - consider a separate implementation of layers, as per LSSS
-    #		// - link to categorisation database and database version
-    #		// - name of echosounder files that the data came from??
-    #		
-    #		:version = "1"; // increasing integers
-    #		:version_save_date = "20190903T154023Z"; // ISO8601 format
-    #		:version_author = "GJM";
-    #		:version_comment = "Initial scrutiny";
-    dset.attrs['Interpretation/v1/version'] = 1
-    dset.attrs['Interpretation/v1/version_save_date'] = datetime.datetime.now().isoformat() # // ISO8601 format
-    dset.attrs['Interpretation/v1/version_author'] = "NOH";
-    dset.attrs['Interpretation/v1/version_comment'] = "UNET";
-
-    #		types:
-    #			// Note: empty_water == LSSS erased; no_data == LSSS excluded
-    #			byte enum region_t {empty_water = 0, no_data = 1, analysis = 2, track = 3, marker = 4};
-    #			// Storing 3D regions is not yet done, but we include the region dimension here anyway
-    #			byte enum region_dim_t {twoD = 0, threeD = 1};
-    #			float(*) mask_depth_t;
-    #			mask_depth_t(*) mask_depths_t;
-    #			uint64(*) mask_time_t; // ragged array for region ping times
-    #		dimensions:
-    #			regions = 3; // varies to suit data. Could also be unlimited
-    #			channels = 3; // varies to suit data
-    #			categories = 5; // varies to suit data.
-    #		variables:
-    #			float sound_speed;
-    #				sound_speed:long_name = "Sound speed used to convert echo time into range";
-    #				sound_speed:standard_name = "speed_of_sound_in_sea_water";
-    #				sound_speed:units = "m/s";
-    #				sound_speed:valid_min = 0.0f;
-    #
-    dset.attrs['Interpretation/v1/version_comment'] = "UNET";
-    dset.create_dataset("Interpretation/v1/another_dataset", (50,), dtype='f')
-
-    #			// The bounding box of each region
-    #			float min_depth(regions);
-    #				min_depth:long_name = "Minimum depth for each region";
-    #				min_depth:units = "m";
-    #				min_depth:valid_min = 0.0f;
-    #			float max_depth(regions);
-    #				max_depth:long_name = "Maximum depth for each regions";
-    #				max_depth:units = "m";
-    #				max_depth:valid_min = 0.0f;
-    #			uint64 start_time(regions);
-    #				start_time:long_name = "Timestamp of the earliest data point in each region";
-    #				start_time:units = "milliseconds since 1601-01-01 00:00:00Z";
-    #				start_time:axis = "T";
-    #				start_time:calendar = "gregorian";
-    #				start_time:standard_name = "time";
-    #			uint64 end_time(regions);
-    #				end_time:long_name = "Timestamp of the latest data point in each region";
-    #				end_time:units = "milliseconds since 1601-01-01 00:00:00Z";
-    #				end_time:axis = "T";
-    #				end_time:calendar = "gregorian";
-    #				end_time:standard_name = "time";
-    #				
-    #			region_dim_t region_dimension; 
-    #				region_dimension:long_name = "Region dimension";
-    #
-    #			int region_id(regions);
-    #				region_id:long_name = "Dataset-unique identification number for each region";
-    #			string region_name(regions);
-    #				region_name:long_name = "Name of each region";
-    #				region_name:_Encoding = "utf-8";
-    #			string region_provenance(regions);
-    #				region_provenance:long_name = "Provenance of each region"; 
-    #				region_provenance:_Encoding = "utf-8";
-    #			string region_comment(regions);
-    #				region_comment:long_name = "Comment for each region";
-    #				region_comment:_Encoding = "utf-8";
-    #			int region_order(regions);
-    #				region_order:long_name = "The stacking order of the region";
-    #				region_order:comment = "Regions of the same order cannot overlap";
-    #			region_t region_type(regions);
-    #				region_type:long_name = "Region type";
-    #			
-    #			// The acosutic categories. Each layer may have several categories and proportions.
-    #			string region_category_names(categories);
-    #				region_category_names:long_name = "Categorisation name";
-    #				region_category_names:_Encoding = "utf-8";
-    #			float region_category_proportions(categories);
-    #				region_category_proportions:long_name = "Proportion of backscatter for the categorisation";
-    #				region_category_proportions:value_range = 0.0f, 1.0f;
-    #			int region_category_ids(categories);
-    #				region_category_ids:long_name = "region_id of this categorisation and proportion";
-    #			
-    #			string channel_names(channels);
-    #				channel_names:long_name = "Echosounder channel names";
-    #				channel_names:_Encoding = "utf-8";
-    #			uint region_channels(regions);
-    #				region_channels:long_name = "Echosounder channels that this region applies to";
-    #				region_channels:description = "Bit mask derived from channel_names (index 1 of channel_names = bit 1, index 2 = bit 2, etc). Set bits in excess of the number of channels are to be ignored.";
-    #				region_channels:_FillValue = 4294967295; // 2^32-1
-    #				
-    #			mask_time_t mask_times(regions);
-    #				mask_times:long_name = "Timestamp of each mask point";
-    #				mask_times:units = "milliseconds since 1601-01-01 00:00:00Z";
-    #				mask_times:axis = "T";
-    #				mask_times:calendar = "gregorian";
-    #				mask_times:standard_name = "time";
-    #			mask_depths_t mask_depths(regions);
-    #				mask_depths:long_name = "Depth pairs of mask";
-    #				mask_depths:units = "m";
-    #				mask_depths:valid_min = 0.0f;
-
-
-
-            
-def plot_pr_curves(device, path_model_params):
-
-    freqs = [18, 38, 120, 200]
-    n_ech_per_year = 10000 # Upper limit for number of echograms per year
-    echograms_all = get_echograms(frequencies=freqs, minimum_shape=256)
-    years_all = [2007, 2008, 2009, 2010, 2011, 2013, 2014, 2015, 2016, 2017, 2018]
-    echograms_year = {y: [ech for ech in echograms_all if ech.year == y] for y in years_all}
-
-    color_year = dict(zip(
-        years_all,
-        ["blue", "blue", "blue", "blue", "red", "red", "red", "red", "red", "blue", "blue"])
-    )
-
-    with torch.no_grad():
-
-        model = UNet(n_classes=3, in_channels=4)
-        model.to(device)
-        model.load_state_dict(torch.load(path_model_params))
-        model.eval()
-
-        pixel_counts = np.zeros((len(years_all), 3))
-
-        for j, year in enumerate(years_all):
-            print(year)
-            echs = echograms_year[year]
-            assert np.all([e.year == year for e in echs])
-            random.shuffle(echs)
-
-            # Get sandeel probabilities for all echograms
-            # sandeel_probs = get_sandeel_probs(model, echs, freqs, mode="all", n_echs=n_ech_per_year)
-            sandeel_probs, pixel_counts_year = \
-                get_sandeel_probs_object_pathces(model, echs, freqs, n_echs=n_ech_per_year, extend_size=20)
-
-            pixel_counts[j, :] = pixel_counts_year
-
-            # Compute precision/recall values
-            pr_curve = get_pr_curve(sandeel_probs, n_thresholds=200)
-
-            # Plot
-            plt.subplot(3, 4, 1 + j)
-            plt.scatter(pr_curve[:, 0], pr_curve[:, 1], s=5, c=color_year[year])
-            plt.xlim(0, 1.01)
-            plt.ylim(0, 1.01)
-            plt.title(year)
-            plt.xlabel("Recall", labelpad=-30)
-            plt.ylabel("Precision", labelpad=-40)
-
-        # Print pixel count statistics
-        print(pixel_counts)
-        print(pixel_counts / np.sum(pixel_counts, axis=1, keepdims=True))
-        print(np.sum(pixel_counts, axis=0))
-        print(np.sum(pixel_counts, axis=0) / np.sum(pixel_counts))
-
-        plt.show()
+            # Add to list
+            r = ech.range_vector
+            t = ech.time_vector
+            # Store to pickle
+            with open(ncfile+ech.name+'.pkl',
+                      'wb') as f:  # Python 3: open(..., 'wb')
+                pickle.dump([seg, labels, r, t], f)
 
 
 if __name__ == "__main__":
@@ -546,20 +332,7 @@ if __name__ == "__main__":
     device = torch.device("cuda:3" if torch.cuda.is_available() else "cpu")
     path_model_params = '/acosutic_deep/weights/paper_v2_heave_2.pt'
 
-    ### Uncomment and run script ###
+    # Running predictions
     write_predictions(
         year=2018, device=device,
         path_model_params=path_model_params, ignore_mode='normal')
-    ### PLOT ECHOGRAM WITH PREDICTIONS ###
-    # This generates plots (sequentially) with echogram, labels
-    # and predictions
-    ### Uncomment and run script ###
-    plot_echograms_with_sandeel_prediction(
-        year=2018, device=device,
-        path_model_params=path_model_params, ignore_mode='normal')
-
-    ### PLOT PR CURVES ###
-    # This generates a plot with one p/r curve per year,
-    # evaluated on labeled schools (sandeel/other) and a surrounding region (+20 pixels) of background
-    ### Uncomment and run script ###
-    #plot_pr_curves(device=device, path_model_params=path_model_params)
