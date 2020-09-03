@@ -12,8 +12,7 @@ RUN sh -c "$(curl -fsSL https://raw.github.com/ohmyzsh/ohmyzsh/master/tools/inst
 
 # Install pip and python packages
 RUN pip install --upgrade pip
-RUN pip install numpy scipy matplotlib pdb google h5py
-
+RUN pip install numpy scipy matplotlib pdb google h5py scikit-image
 # Clone the libraries & copy config
 RUN cd /
 RUN git clone https://github.com/CRIMAC-WP4-Machine-learning/CRIMAC-classifyers-unet /CRIMAC-classifyers-unet
