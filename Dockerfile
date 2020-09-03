@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install --yes \
 
 # Install pip and python packages
 RUN pip install --upgrade pip
-RUN pip install numpy scipy matplotlib
+RUN pip install numpy scipy matplotlib pdb google h5py
 
 # Clone the libraries & copy config
 RUN git clone https://github.com/CRIMAC-WP4-Machine-learning/CRIMAC-classifyers-unet /CRIMAC-classifyers-unet

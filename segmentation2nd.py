@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 import random
-
+import pickle
 from models.unet_bn_sequential_db import UNet
 from data.echogram import get_echograms
 from batch.label_transform_functions.index_0_1_27 import index_0_1_27
@@ -229,29 +229,8 @@ def get_sandeel_probs(model, echs, freqs, mode, n_echs):
     return _sandeel_probs
 
 
-def get_pr_curve(sandeel_probs, n_thresholds=200):
-
-    # Get list of threshold values to compute p/r, adjusted to give evenly-ish distributed points on the p/r curve
-    val_range = np.linspace(-20, 20, n_thresholds, endpoint=False)
-    val_range = 1 / (1 + np.exp(-0.4 * (val_range + 3)))
-    assert (np.min(val_range) >= 0) and (np.max(val_range) <= 1)
-
-    pr_curve = []
-    for value in val_range:
-
-        tp = np.sum(sandeel_probs[1] >= value)
-        fp = np.sum(sandeel_probs[0] >= value)
-        fn = np.sum(sandeel_probs[1] < value)
-        #tn = np.sum(sandeel_probs[0] < value)
-
-        precision = tp / (tp + fp) if tp + fp != 0 else 1.0
-        recall = tp / (tp + fn) if tp + fn != 0 else 1.0
-        pr_curve.append([recall, precision])
-
-    return np.array(pr_curve)
-
-
-def plot_echograms_with_sandeel_prediction(year, device, path_model_params, ignore_mode='normal'):
+def plot_echograms_with_sandeel_prediction(year, device, path_model_params,
+                                           ignore_mode='normal'):
 
     # ignore_mode == 'normal': difference between original and modified labels are changed to 'ignore'
     # ignore_mode == 'region': in addition to 'normal' mode, label 'background' is changed to 'ignore' outside of region around labeled schools
@@ -273,7 +252,7 @@ def plot_echograms_with_sandeel_prediction(year, device, path_model_params, igno
 
         for i, ech in enumerate(echs):
             print(i, ech.name)
-
+            pdb.set_trace()
             # Get binary segmentation (probability of sandeel) and labels (-1=ignore, 0=background, 1=sandeel, 2=other)
             seg, labels = get_segmentation_sandeel(model, ech, freqs, device)
 
@@ -304,60 +283,46 @@ def plot_echograms_with_sandeel_prediction(year, device, path_model_params, igno
             )
 
 
-def plot_pr_curves(device, path_model_params):
+def write_predictions(year, device, path_model_params,
+                      ignore_mode='normal', ncfile='/datawork/work.nc'):
 
+    # ignore_mode == 'normal': difference between original and modified
+    #                labels are changed to 'ignore'
+    # ignore_mode == 'region': in addition to 'normal' mode, label 'background'
+    #          is changed to 'ignore' outside of region around labeled schools
+
+    assert ignore_mode in ['normal', 'region']
     freqs = [18, 38, 120, 200]
-    n_ech_per_year = 10000 # Upper limit for number of echograms per year
-    echograms_all = get_echograms(frequencies=freqs, minimum_shape=256)
-    years_all = [2007, 2008, 2009, 2010, 2011, 2013, 2014, 2015, 2016, 2017, 2018]
-    echograms_year = {y: [ech for ech in echograms_all if ech.year == y] for y in years_all}
-
-    color_year = dict(zip(
-        years_all,
-        ["blue", "blue", "blue", "blue", "red", "red", "red", "red", "red", "blue", "blue"])
-    )
-
+    echograms_all = get_echograms(frequencies=freqs)
+    years_all = [2007, 2008, 2009, 2010, 2011, 2013,
+                 2014, 2015, 2016, 2017, 2018]
+    echograms_year = {y: [ech for ech in echograms_all
+                          if ech.year == y] for y in years_all}
+    echs = echograms_year[year]
     with torch.no_grad():
 
         model = UNet(n_classes=3, in_channels=4)
         model.to(device)
-        model.load_state_dict(torch.load(path_model_params))
+        model.load_state_dict(torch.load(path_model_params,
+                                         map_location=device))
         model.eval()
 
-        pixel_counts = np.zeros((len(years_all), 3))
+        # Open ncfile
 
-        for j, year in enumerate(years_all):
-            print(year)
-            echs = echograms_year[year]
-            assert np.all([e.year == year for e in echs])
-            random.shuffle(echs)
-
-            # Get sandeel probabilities for all echograms
-            # sandeel_probs = get_sandeel_probs(model, echs, freqs, mode="all", n_echs=n_ech_per_year)
-            sandeel_probs, pixel_counts_year = \
-                get_sandeel_probs_object_pathces(model, echs, freqs, n_echs=n_ech_per_year, extend_size=20)
-
-            pixel_counts[j, :] = pixel_counts_year
-
-            # Compute precision/recall values
-            pr_curve = get_pr_curve(sandeel_probs, n_thresholds=200)
-
-            # Plot
-            plt.subplot(3, 4, 1 + j)
-            plt.scatter(pr_curve[:, 0], pr_curve[:, 1], s=5, c=color_year[year])
-            plt.xlim(0, 1.01)
-            plt.ylim(0, 1.01)
-            plt.title(year)
-            plt.xlabel("Recall", labelpad=-30)
-            plt.ylabel("Precision", labelpad=-40)
-
-        # Print pixel count statistics
-        print(pixel_counts)
-        print(pixel_counts / np.sum(pixel_counts, axis=1, keepdims=True))
-        print(np.sum(pixel_counts, axis=0))
-        print(np.sum(pixel_counts, axis=0) / np.sum(pixel_counts))
-
-        plt.show()
+        # Predict
+        for i, ech in enumerate(echs):
+            print(i, ech.name)
+            
+            # Get binary segmentation (probability of sandeel) and labels
+            # (-1=ignore, 0=background, 1=sandeel, 2=other)
+            seg, labels = get_segmentation_sandeel(model, ech, freqs, device)
+            # Add to list
+            r = ech.range_vector
+            t = ech.time_vector
+            # Store to pickle
+            with open(ncfile+ech.name+'.pkl',
+                      'wb') as f:  # Python 3: open(..., 'wb')
+                pickle.dump([seg, labels, r, t], f)
 
 
 if __name__ == "__main__":
@@ -367,16 +332,7 @@ if __name__ == "__main__":
     device = torch.device("cuda:3" if torch.cuda.is_available() else "cpu")
     path_model_params = '/acosutic_deep/weights/paper_v2_heave_2.pt'
 
-    ### PLOT ECHOGRAM WITH PREDICTIONS ###
-    # This generates plots (sequentially) with echogram, labels
-    # and predictions
-    ### Uncomment and run script ###
-    plot_echograms_with_sandeel_prediction(
+    # Running predictions
+    write_predictions(
         year=2018, device=device,
         path_model_params=path_model_params, ignore_mode='normal')
-
-    ### PLOT PR CURVES ###
-    # This generates a plot with one p/r curve per year,
-    # evaluated on labeled schools (sandeel/other) and a surrounding region (+20 pixels) of background
-    ### Uncomment and run script ###
-    #plot_pr_curves(device=device, path_model_params=path_model_params)
