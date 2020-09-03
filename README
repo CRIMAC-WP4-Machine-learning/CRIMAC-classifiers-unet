@@ -18,7 +18,7 @@ podman build --tag crimacwp4-unet:pallas .
 # Set the display variable (replace with your IP) on windows:
 set-variable -name DISPLAY -value 10.1.83.116:0.0
 # From linux
-export DISPLAY=10.1.83.116:0.0
+export DISPLAY=10.1.83.58:0.0
 
 # Generate and run the container. The -v flag should point to the memmap files
 # system, and the -p flag should be the port for the jupyter-notebook.
@@ -31,7 +31,7 @@ export DISPLAY=10.1.83.116:0.0
 docker run -it --name crimacwp4-unet -p 8989:8989 -v D:\DATA\LSSS-label-versioning\S2016837\ACOUSTIC\LSSS\WORK\:/datawork/ -v D:\DATA\LSSS-label-versioning\S2016837\ACOUSTIC\memmap:/datain/ -v D:\DATA\LSSS-label-versioning\modelweights:/model/ -e DISPLAY=$DISPLAY crimacwp4-unet:test
 
 # On pallas
-podman run -it --userns=host --security-opt=label=disable --hooks-dir /usr/share/containers/oci/hooks.d -e DISPLAY=$DISPLAY -v /scratch/nilsolav/deep/data/unetweights/:/model:z -v /scratch/nilsolav/deep/data/echosounder_scratch/akustikk_all/North\ Sea\ NOR\ Sandeel\ cruise\ in\ Apr_May_17082019/memmap:/datain:z -v /scratch/nilsolav/deep/data/echosounder_scratch/akustikk_all/North\ Sea\ NOR\ Sandeel\ cruise\ in\ Apr_May_17082019/work:/datawork:z crimacwp4-unet:pallas zsh
+podman run -it --userns=host --security-opt=label=disable --hooks-dir /usr/share/containers/oci/hooks.d -e DISPLAY=$DISPLAY -v /scratch/nilsolav/deep/data/unetweights/:/model:z -v /scratch/nilsolav/deep/data/echosounder_scratch/akustikk_all/North\ Sea\ NOR\ Sandeel\ cruise\ in\ Apr_May/memmap:/datain:z -v /scratch/nilsolav/deep/data/echosounder_scratch/akustikk_all/North\ Sea\ NOR\ Sandeel\ cruise\ in\ Apr_May/work:/datawork:z crimacwp4-unet:pallas zsh
 
 # Enter a running container
 docker exec -it -e DISPLAY=$DISPLAY <id> zsh

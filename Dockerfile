@@ -18,7 +18,6 @@ RUN git clone https://github.com/CRIMAC-WP4-Machine-learning/CRIMAC-classifyers-
 RUN sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
 
 # RUN cp /CRIMAC-classifyers-unet/.emacs ~
-
 # RUN git clone https://github.com/COGMAR/acoustic_private /acosutic_private
 # RUN cp /CRIMAC-classifyers-unet/setpyenv.json /acosutic_private
 CMD zsh
