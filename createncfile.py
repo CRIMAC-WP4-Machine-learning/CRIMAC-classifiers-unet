@@ -52,56 +52,6 @@ with h5py.File(F+".nc", "w") as f:
     v1.attrs['Interpretation/v1/version_author'] = "NOH"
     v1.attrs['Interpretation/v1/version_comment'] \
         = "UNET predictions from Brautaset et al. (2010)"
-
-    # Create empty dataset for dimension scale definitions
-    # (this does not work when testing ncdump)
-    # f.create_dataset("Interpretation/v1/channels", dtype=float)
-    # f["Interpretation/v1/channels"].make_scale('channels')
-    # f.create_dataset("Interpretation/v1/regions", dtype=float)
-    # f["Interpretation/v1/regions"].make_scale('regions')
-    # f.create_dataset("Interpretation/v1/categories", dtype=float)
-    # f["Interpretation/v1/categories"].make_scale('categories')
-    # Add if not empty
-    if len(schools) > 0:
-       
-        st = [1, 1]
-        sd = [1, 1, 1]
-        # Create the mask_time data set
-        mt = f.create_dataset("Interpretation/v1/mask_time", st,
-                              dtype=float, maxshape=(None, None))
-        md = f.create_dataset("Interpretation/v1/mask_depths", sd,
-                              dtype=float, maxshape=(None, None, None))
-        
-        # Loop over all schools and get the start and stop depths
-        k = 0
-        for school in schools:
-            sub_school = all_labels == school
-            # Get the time indices for the school
-            timeinds = np.where(np.sum(sub_school, 0) > 0)[0]
-            if st[1] < len(timeinds):
-                st[1] = len(timeinds)
-                sd[1] = len(timeinds)
-            mt.resize(st)
-            md.resize(sd)
-            # Add data to the nc file
-            mt[k, 0:len(timeinds)] = t[timeinds]
-
-            for i, timeind in enumerate(timeinds):
-                # Find start and end depths
-                diffs = (np.diff(np.sign(bin_labels[:, timeind])) != 0)*1
-                diffinds = np.where(diffs)[0]
-                depths = r[diffinds]
-                # Resize the variables
-                if sd[2] < len(depths):
-                    sd[2] = len(depths)
-                    md.resize(sd)
-                # Add data from the new school
-                md[k, i, 0:len(depths)] = depths
-            # Book keeping for the next school
-            sd[0] = sd[0]+1
-            st[0] = st[0]+1
-            k = k + 1
-    # Add attributes
     v1.attrs['Interpretation/v1/mask_times/long_name'] \
         = "Timestamp of each mask point"
     v1.attrs['Interpretation/v1/mask_times/units'] \
@@ -114,3 +64,47 @@ with h5py.File(F+".nc", "w") as f:
     v1.attrs['Interpretation/v1/mask_depths/units'] = "m"
     v1.attrs['Interpretation/v1/mask_depths/valid_min'] = float(0)
 
+    # Create empty dataset for dimension scale definitions
+    # (this does not work when testing ncdump)
+    # f.create_dataset("Interpretation/v1/channels", dtype=float)
+    # f["Interpretation/v1/channels"].make_scale('channels')
+    # f.create_dataset("Interpretation/v1/regions", dtype=float)
+    # f["Interpretation/v1/regions"].make_scale('regions')
+    # f.create_dataset("Interpretation/v1/categories", dtype=float)
+    # f["Interpretation/v1/categories"].make_scale('categories')
+    # Add if not empty
+    length_schools = len(schools)
+    if length_schools > 0:
+       
+        # Create the mask_time data set
+        dt1 = h5py.vlen_dtype(np.dtype('float'))
+        mt = f.create_dataset("Interpretation/v1/mask_time",
+                              (length_schools,), dtype=dt1)
+
+        # This requires 2 depths only, but this needs to be scalable
+        rowtype = np.dtype([('f0', '<f4', (2, ))])
+        dt2 = h5py.special_dtype(vlen=np.dtype(rowtype))
+        md = f.create_dataset("Interpretation/v1/mask_depths",
+                              (length_schools,), dtype=dt2)
+        # https://stackoverflow.com/questions/41465480/h5py-how-to-store-many-2d-arrays-of-different-dimensions
+        
+        # Loop over all schools and get the start and stop depths
+        k = 0
+        for school in schools:
+            sub_school = all_labels == school
+            # Get the time indices for the school
+            timeinds = np.where(np.sum(sub_school, 0) > 0)[0]
+            # Add time data to the nc file
+            mt[k] = t[timeinds]
+            
+            # Add the range data to the nc file
+            testarray = np.ones((len(timeinds),), dtype=rowtype)
+            for i, timeind in enumerate(timeinds):
+                # Find start and end depths
+                diffs = (np.diff(np.sign(bin_labels[:, timeind])) != 0)*1
+                diffinds = np.where(diffs)[0]
+                testarray[i] = r[diffinds][0:1]
+            # print(testarray)
+            md[k] = testarray
+            # Book keeping for the next school
+            k = k + 1
