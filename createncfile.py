@@ -5,11 +5,15 @@ import numpy.matlib as npm
 from skimage import measure
 import h5py
 import datetime
+import pandas as pd
 
 # Read the tempoary data
 F = "/datawork/2016837-D20160427-T221032.pkl"
 with open(F, 'rb') as f:
-    [seg, labels, r, t] = pickle.load(f)
+    [seg, labels, r, mattime] = pickle.load(f)
+
+# Convert from matlab time to milliseconds
+t = time2NTtime(mattime)
 
 #
 # Tidy up data
@@ -79,7 +83,7 @@ with h5py.File(F+".nc", "w") as f:
        
         # Create the mask_time data set
         dt = h5py.vlen_dtype(np.dtype('float'))
-        mt = f.create_dataset("Interpretation/v1/mask_time",
+        mt = f.create_dataset("Interpretation/v1/mask_times",
                               (length_schools,), dtype=dt)
 
         # This requires 2 depths only, but this needs to be scalable
@@ -95,8 +99,8 @@ with h5py.File(F+".nc", "w") as f:
 
         for i, school in enumerate(schools):
             # Initialize empty numpy arra for the time variable
-            T = np.empty(())
-            R = np.empty(())
+            #T = None  # np.empty(())
+            #R = None  # np.empty(())
             sub_school = all_labels == school
             # Get the time indices for school i
             timeinds = np.where(np.sum(sub_school, 0) > 0)[0]
@@ -109,11 +113,29 @@ with h5py.File(F+".nc", "w") as f:
                 # Number of equal timestamps
                 ki = int(len(nilz)/2)
                 # Append time vector and duplicate the time steps
-                T = np.append(T, npm.repmat(t[timeind], ki, 1))
+                if(j == 0):
+                    T = npm.repmat(t[timeind], ki, 1)
+                else:
+                    T = np.append(T, npm.repmat(t[timeind], ki, 1))
                 # Append range vector
-                R = np.append(R, nilz)
+                if(j == 0):
+                    R = nilz
+                else:
+                    R = np.append(R, nilz)
             # Store the range and time vector as a ragged array for each school
             md[i] = R
             mt[i] = T
+            print(T)
 
 
+def time2NTtime(matlabSerialTime):
+    # offset in days between ML serial time and NT time
+    ML_NT_OFFSET = 584755  # datenum(1601, 1, 1, 0, 0, 0);
+    # convert the offset to 100 nano second intervals
+    # 60 * 60 * 24 * 10000000 = 864000000000
+    ML_NT_OFFSET = ML_NT_OFFSET * 864000000000
+    # Convert your MATLAB serial time to 100 nano second intervals
+    matlabSerialTime = matlabSerialTime * 864000000000
+    # Now subtract
+    ntTime = matlabSerialTime - ML_NT_OFFSET
+    return ntTime
