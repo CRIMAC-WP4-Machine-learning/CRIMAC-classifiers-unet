@@ -8,9 +8,6 @@ from batch.label_transform_functions.index_0_1_27 import index_0_1_27
 from batch.label_transform_functions.relabel_with_threshold_morph_close import relabel_with_threshold_morph_close
 from batch.data_transform_functions.db_with_limits import db_with_limits
 
-import utils.plotting
-plt = utils.plotting.setup_matplotlib()  # Returns import matplotlib.pyplot as plt
-import pdb
 # Create segmentation from trained segmentation model (e.g. U-Net)
 from predict._frameworks_Olav import get_prediction_function
 
@@ -122,7 +119,6 @@ def get_segmentation_sandeel(model, ech, freqs, device):
 
     # Remove sandeel predictions 10 pixels below seabed and down
     seg = post_processing(seg, ech)
-
     return seg, relabel_morph_close
 
 
@@ -252,7 +248,7 @@ def plot_echograms_with_sandeel_prediction(year, device, path_model_params,
 
         for i, ech in enumerate(echs):
             print(i, ech.name)
-            pdb.set_trace()
+            # pdb.set_trace()
             # Get binary segmentation (probability of sandeel) and labels (-1=ignore, 0=background, 1=sandeel, 2=other)
             seg, labels = get_segmentation_sandeel(model, ech, freqs, device)
 
@@ -319,10 +315,26 @@ def write_predictions(year, device, path_model_params,
             # Add to list
             r = ech.range_vector
             t = ech.time_vector
+            h = ech.heave
+            trd = ech.trdepth
+
             # Store to pickle
             with open(ncfile+ech.name+'.pkl',
                       'wb') as f:  # Python 3: open(..., 'wb')
-                pickle.dump([seg, labels, r, t], f)
+                pickle.dump([seg, labels, r, t, h, trd], f)
+
+
+def time2NTtime(matlabSerialTime):
+    # offset in days between ML serial time and NT time
+    ML_NT_OFFSET = 584755  # datenum(1601, 1, 1, 0, 0, 0);
+    # convert the offset to 100 nano second intervals
+    # 60 * 60 * 24 * 10000000 = 864000000000
+    ML_NT_OFFSET = ML_NT_OFFSET * 864000000000
+    # Convert your MATLAB serial time to 100 nano second intervals
+    matlabSerialTime = matlabSerialTime * 864000000000
+    # Now subtract
+    ntTime = matlabSerialTime - ML_NT_OFFSET
+    return ntTime
 
 
 if __name__ == "__main__":

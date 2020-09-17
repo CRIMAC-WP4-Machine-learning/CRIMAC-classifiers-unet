@@ -6,11 +6,12 @@ from skimage import measure
 import h5py
 import datetime
 import pandas as pd
+import pdb
 
 # Read the tempoary data
 F = "/datawork/2016837-D20160427-T221032.pkl"
 with open(F, 'rb') as f:
-    [seg, labels, r, mattime] = pickle.load(f)
+    [seg, labels, r, mattime, heave, trdepth] = pickle.load(f)
 
 # Convert from matlab time to milliseconds
 t = time2NTtime(mattime)
@@ -78,29 +79,19 @@ with h5py.File(F+".nc", "w") as f:
     # f.create_dataset("Interpretation/v1/categories", dtype=float)
     # f["Interpretation/v1/categories"].make_scale('categories')
     # Add if not empty
+    
     length_schools = len(schools)
     if length_schools > 0:
-       
         # Create the mask_time data set
         dt = h5py.vlen_dtype(np.dtype('float'))
         mt = f.create_dataset("Interpretation/v1/mask_times",
                               (length_schools,), dtype=dt)
-
-        # This requires 2 depths only, but this needs to be scalable
-        # rowtype = np.dtype([('f0', '<f4', (2, ))])
-        # rowtype = np.dtype([('f0', '<f4')])
-        # dt2 = h5py.special_dtype(vlen=np.dtype(rowtype))
-        # dt2 = h5py.vlen_dtype(np.dtype('float'))
         md = f.create_dataset("Interpretation/v1/mask_depths",
                               (length_schools,), dtype=dt)
-        # https://stackoverflow.com/questions/41465480/h5py-how-to-store-many-2d-arrays-of-different-dimensions
         
         # Loop over all schools and get the start and stop depths
-
         for i, school in enumerate(schools):
             # Initialize empty numpy arra for the time variable
-            #T = None  # np.empty(())
-            #R = None  # np.empty(())
             sub_school = all_labels == school
             # Get the time indices for school i
             timeinds = np.where(np.sum(sub_school, 0) > 0)[0]
@@ -109,7 +100,8 @@ with h5py.File(F+".nc", "w") as f:
                 # Find pairs of start and end depths for time i
                 diffs = (np.diff(np.sign(bin_labels[:, timeind])) != 0)*1
                 diffinds = np.where(diffs)[0]
-                nilz = r[diffinds]
+                # Extract range and add transducer depth and heave
+                nilz = r[diffinds] + trdepth[timeind] + heave[timeind]
                 # Number of equal timestamps
                 ki = int(len(nilz)/2)
                 # Append time vector and duplicate the time steps
@@ -125,7 +117,6 @@ with h5py.File(F+".nc", "w") as f:
             # Store the range and time vector as a ragged array for each school
             md[i] = R
             mt[i] = T
-            print(T)
 
 
 def time2NTtime(matlabSerialTime):
