@@ -1,27 +1,18 @@
 import pickle
-import matplotlib.pyplot as plt
 import numpy as np
 import numpy.matlib as npm
 from skimage import measure
 import h5py
 import datetime
-import pandas as pd
-import pdb
 import glob
+
 
 def createncfile(F, seg, labels, r, mattime, heave, trdepth):
     # Convert from matlab time to milliseconds
     t = time2NTtime(mattime)
     
-    #
-    # Tidy up data
-    #
-    
     # Apply logic operatioin to the data to get the binary image
     bin_labels = (labels > 0) * 1   # get either 0 or 1 in the array
-    
-    # plt.imshow(bin_labels, cmap=plt.cm.gray)  # use appropriate colormap here
-    # plt.show()
     
     # Connect pixels to generate unique schools
     all_labels = measure.label(bin_labels)
@@ -45,6 +36,7 @@ def createncfile(F, seg, labels, r, mattime, heave, trdepth):
         
         # Create interpolation group
         intepretation = f.create_group("Interpretation")
+
         # group v1
         # Subsequent versions of this interpretation get put in new subgroups,
         # using the numbering system v1, v2, etc.
@@ -76,7 +68,8 @@ def createncfile(F, seg, labels, r, mattime, heave, trdepth):
         # f.create_dataset("Interpretation/v1/categories", dtype=float)
         # f["Interpretation/v1/categories"].make_scale('categories')
         # Add if not empty
-        
+
+        # Loop over schools
         length_schools = len(schools)
         if length_schools > 0:
             # Create the mask_time data set
@@ -111,9 +104,10 @@ def createncfile(F, seg, labels, r, mattime, heave, trdepth):
                         R = nilz
                     else:
                         R = np.append(R, nilz)
-                    # Store the range and time vector as a ragged array for each school
+                
+                # Store the range and time vector as a ragged array per school
                 md[i] = R
-                mt[i] = np.reshape(T,len(T))
+                mt[i] = np.reshape(T, len(T))
 
 
 def time2NTtime(matlabSerialTime):
