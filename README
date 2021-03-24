@@ -3,35 +3,56 @@
 # It is slightly circular since you need to clone this repos to get the Dockerfile and
 # then the dockerfile clones the repos inside the Dockerfile.
 
-# For testing you can clone the testdata:
-git clone https://github.com/nilsolav/LSSS-label-versioning
-# The raw data have to be copied from pallas: /scratch/nilsolav
+# For testing you need to clone the testdata from the Azure server
 
 # Build the docker image locally
 docker build --tag crimacwp4-unet:test .
-# Build on Pallas
-# there is limited space on localhome, remove all stuff before re-building
-podman system prune
-# and then build the image
-podman build --tag crimacwp4-unet:pallas .
+
 
 # Set the display variable (replace with your IP) on windows:
 set-variable -name DISPLAY -value 10.1.83.116:0.0
 # From linux
 export DISPLAY=10.1.83.58:0.0
 
-# Generate and run the container. The -v flag should point to the memmap files
-# system, and the -p flag should be the port for the jupyter-notebook.
+# Generate and run the container. The -v flag should point to the data files
+
 # Three directories needs to be linked:
-# \datain\ should be mapped to the data directory where the memmap files
+# \datain\ should be mapped to the data directory where the zarr files are stored
 # \model\ should be mapped to the directory where the model weights are stored
-# \datawork\ should be mapped to the directory where the workfiles are located
+# \dataout\ should be mapped to the directory where the predictions will be written
 
 # Locally
 docker run -it --name crimacwp4-unet -p 8989:8989 -v D:\DATA\LSSS-label-versioning\S2016837\ACOUSTIC\LSSS\WORK\:/datawork/ -v D:\DATA\LSSS-label-versioning\S2016837\ACOUSTIC\memmap:/datain/ -v D:\DATA\LSSS-label-versioning\modelweights:/model/ -e DISPLAY=$DISPLAY crimacwp4-unet:test
 
-# On pallas
-podman run -it --userns=host --security-opt=label=disable --hooks-dir /usr/share/containers/oci/hooks.d -e DISPLAY=$DISPLAY -v /scratch/nilsolav/deep/data/unetweights/:/model:z -v /scratch/nilsolav/deep/data/echosounder_scratch/akustikk_all/North\ Sea\ NOR\ Sandeel\ cruise\ in\ Apr_May/memmap:/datain:z -v /scratch/nilsolav/deep/data/echosounder_scratch/akustikk_all/North\ Sea\ NOR\ Sandeel\ cruise\ in\ Apr_May/work:/datawork:z crimacwp4-unet:pallas zsh
+# On Nautilus/Pallas
+
+# Preprocess data
+docker run -it --name pyechopreprocess \
+-v /scratch/disk2/AzureMirror/cruise_data/2016/S2016837_PEROS_3317/ACOUSTIC/EK60/EK60_RAWDATA/:/datain/ \
+-v /scratch/disk2/AzureMirror/cruise_data/2016/S2016837_PEROS_3317/ACOUSTIC/ZARR/:/dataout/ \
+-v /scratch/disk2/AzureMirror/cruise_data/2016/S2016837_PEROS_3317/ACOUSTIC/LSSS/WORK/:/workin \
+--security-opt label=disable \
+--env OUTPUT_TYPE=zarr \
+--env MAIN_FREQ=38000 \
+--env MAX_RANGE_SRC=500 \
+--env OUTPUT_NAME=S2018823 \
+--env WRITE_PNG=0 \
+crimac/preprocessor
+
+
+# Run predictions on Nautilus
+docker run -it --name crimacwp4-unet -p 8989:8989 -v \
+-v /scratch/disk2/AzureMirror/cruise_data/2016/S2016837_PEROS_3317/ACOUSTIC/ZARR/:/datain/ \
+-v /scratch/disk2/AzureMirror/cruise_data/2016/S2016837_PEROS_3317/ACOUSTIC/ZARR/:/dataout/ \
+-v /scratch/disk2/AzureMirror/models/NR_Unet/:/model/ \
+-e DISPLAY=$DISPLAY crimacwp4-unet:test
+
+docker run -it --name crimacwp4-unet \
+-v /scratch/disk2/AzureMirror/cruise_data/2016/S2016837_PEROS_3317/ACOUSTIC/ZARR/:/datain/ \
+-v /scratch/disk2/AzureMirror/cruise_data/2016/S2016837_PEROS_3317/ACOUSTIC/ZARR/:/dataout/ \
+-v /scratch/disk2/AzureMirror/models/NR_Unet/:/model/ \
+crimacwp4-unet:test
+
 
 # Enter a running container
 docker exec -it -e DISPLAY=$DISPLAY <id> zsh
