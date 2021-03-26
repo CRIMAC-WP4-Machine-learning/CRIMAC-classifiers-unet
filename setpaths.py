@@ -1,6 +1,6 @@
 # Set path
 import sys
-sys.path.append("/acosutic_private")
+sys.path.append("/Acoustic-CRIMAC/src-cogmar/")
 
 
 
