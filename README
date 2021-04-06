@@ -47,12 +47,15 @@ docker run -it --name crimacwp4-unet -p 8989:8989 -v \
 -v /scratch/disk2/AzureMirror/models/NR_Unet/:/model/ \
 -e DISPLAY=$DISPLAY crimacwp4-unet:test
 
+# Enter a running container:
 docker run -it --name crimacwp4-unet \
 -v /scratch/disk2/AzureMirror/cruise_data/2016/S2016837_PEROS_3317/ACOUSTIC/ZARR/:/datain/ \
 -v /scratch/disk2/AzureMirror/cruise_data/2016/S2016837_PEROS_3317/ACOUSTIC/ZARR/:/dataout/ \
 -v /scratch/disk2/AzureMirror/models/NR_Unet/:/model/ \
 crimacwp4-unet:test
 
+# If the container has stopped:
+docker start <id>
 
 # Enter a running container
 docker exec -it -e DISPLAY=$DISPLAY <id> zsh
