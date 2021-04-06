@@ -4,7 +4,7 @@ import torch
 import numpy as np
 import random
 import time
-from pipeline_train_predict.pipeline import Config_Options, SegPipeUNet
+from pipeline_train_predict.pipeline import Config_Options, SegPipeUNet, pipeline_config
 from data.echogram import get_data_readers
 from paths import *
 
@@ -18,24 +18,18 @@ ncfile = '/datawork/'
 
 # Run the predictions
 
-# Configuration options
-opt = Config_Options(
-    data_mode='zarr',
-    unit_frequency='Hz',
-    dev=device,
-    path_model_params=path_to_trained_model(),
-    eval_mode='all',
-    partition_predict='selected surveys',
-    selected_surveys=['S2018823'],
-    dir_save_preds_labels=path_for_saving_preds_labels(),
-    save_labels=False,
-    labels_available=False
-)
+# Configuration options dictionary
+configuration = pipeline_config()
+# Set specific parameters for this case
+configuration['selected_surveys'] = ['S2018823']
+configuration['labels_available'] = False
+# Create options instance
+opt = Config_Options(configuration)
 
 
 segpipe = SegPipeUNet(opt)
 # Save segmentation predictions
 print("Save predictions")
 start = time.time()
-segpipe.save_segmentation_predictions_sandeel(selected_surveys=opt.selected_surveys)
+segpipe.save_segmentation_predictions_in_zarr(selected_surveys=opt.selected_surveys, resume=opt.resume_writing)
 print(f"Executed time for saving all prediction (h): {np.round((time.time() - start) / 3600, 2)}")

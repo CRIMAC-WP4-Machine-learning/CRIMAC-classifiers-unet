@@ -13,6 +13,7 @@ RUN pip install --upgrade pip
 #RUN pip install numpy scipy matplotlib google h5py scikit-image pandas sklearn xarray dask zarr
 # Clone the libraries & copy config
 RUN git clone https://github.com/CRIMAC-WP4-Machine-learning/CRIMAC-classifyers-unet /CRIMAC-classifyers-unet
+RUN git clone https://github.com/CRIMAC-WP4-Machine-learning/CRIMAC-annotationtools
 
 # Get the ohmyzsh env
 RUN sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
