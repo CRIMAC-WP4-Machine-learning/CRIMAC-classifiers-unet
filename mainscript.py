@@ -19,7 +19,7 @@ path_model_params = '/model/paper_v2_heave_2.pt'
 # Configuration options dictionary
 configuration = pipeline_config()
 # Set specific parameters for this case
-configuration['selected_surveys'] = ['out']
+configuration['selected_surveys'] = [os.getenv('OUTPUT_NAME', 'out')]
 configuration['labels_available'] = False
 configuration['dev'] = 0
 # Create options instance
