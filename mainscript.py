@@ -4,11 +4,10 @@ import torch
 import numpy as np
 import random
 import time
+import os
 from pipeline_train_predict.pipeline import Config_Options, SegPipeUNet, pipeline_config
 from data.echogram import get_data_readers
 from paths import *
-
-import pdb
 
 np.random.seed(5)
 random.seed(5)
