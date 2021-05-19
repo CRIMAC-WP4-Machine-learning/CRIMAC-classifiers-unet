@@ -1,0 +1,49 @@
+### Config options: General (Training and Prediction)
+
+# Input data type (Options: zarr or memm)
+data_mode: 'memm'
+# Frequency unit (Options: Hz or KHz)
+unit_frequency: 'kHz'
+# Cuda device id (default: 0) if not available cpu is used
+dev: 3
+# Number of data loading workers (default: 10)
+num_workers: 10
+# The height / width of the input image patch to network (default: 256)
+window_dim: 256
+# Input batch size (default: 16)
+batch_size: 16
+# Learning rate (default: 0.005)
+lr: 0.005
+# Learning rate reduction (default: 0.5)
+lr_reduction: 0.5
+# SGD momentum (default: 0.95)
+momentum: 0.95
+# Number of test batches (default: 20)
+test_iter: 20
+# Number of batches to wait before logging training/validation status (default: 1000)
+log_step: 1000
+# Number of batches to wait before updating learning rate (default: 1000)
+lr_step: 1000
+# Number of training batches (default: 10000)
+iterations: 10000
+# Partitioning of training data (Options: random, selected surveys, single survey, all surveys - default: 'all surveys')
+partition: 'selected_surveys'
+# Whether to use save the trained model
+save_model_params: True
+
+### Config options: Inference
+
+# Evaluation model (Options: all, region, fish - default:'all')
+eval_mode: 'all'
+# Partitioning of the data for the inference (Options: selected surveys, single survey, all surveys - default: 'all surveys')
+partition_predict: 'selected surveys'
+# List with the names of the selected survey
+selected_surveys: ['S2017843D20170513', 'S2017843D20170513T081028']
+# List with strings referring to colors
+colors_list: []
+# Whether to save the labels
+save_labels: False
+# Whether the labels are available
+labels_available: True
+# Whether to resume writing zarr predictions for a survey
+resume_writing: False
