@@ -19,18 +19,20 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
 import time
 import numpy as np
 from pipeline_train_predict.pipeline import Config_Options, SegPipeUNet
+from data.echogram import get_data_readers
 from paths import *
 
 if __name__ == '__main__':
+
     # Configuration options
     configuration = pipeline_config()
     opt = Config_Options(configuration)
+
 
     segpipe = SegPipeUNet(opt)
     # Plot and save metrics
     print("Save evaluation results")
     start = time.time()
-
     segpipe.compute_and_plot_evaluation_metrics(selected_surveys=opt.selected_surveys,
                                                 colors_list=opt.colors_list)
     print(f"Executed time for computing metrics (min): {np.round((time.time() - start) / 60, 2)}")

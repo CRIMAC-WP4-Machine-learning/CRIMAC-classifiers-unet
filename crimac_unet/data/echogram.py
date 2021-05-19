@@ -29,7 +29,6 @@ import paths
 from data.normalization import db
 from data.missing_korona_depth_measurements import depth_excluded_echograms
 from data_preprocessing.generate_heave_compensation_files import write_label_file_without_heave_correction_one_echogram
-from datetime import datetime, timedelta
 
 from tqdm import tqdm
 
@@ -52,34 +51,6 @@ class Echogram():
                 f.seek(0)
                 return pickle.load(f, encoding='latin1')
 
-        def timevector_to_diff(time_vector):
-            out = np.concatenate((
-                [time_vector[1] - time_vector[0]],
-                (time_vector[2:] - time_vector[:-2]) / 2,
-                [time_vector[-1] - time_vector[-2]]
-            ), axis=0) / 6e-6 - 1
-            # Normalized to get values approximately on interval [-1, 1]
-            return out
-
-        def timevector_to_datetime(time_vector):
-            days = time_vector % 1
-            return datetime.fromordinal(int(time_vector)) + timedelta(days=days) - timedelta(days=366)
-
-        def date_time_to_portion_of_day(t):
-            return t.hour / 24 + t.minute / 24 / 60 + t.second / 24 / 3600
-
-        def date_time_to_portion_of_year(t):
-            return t.month / 12 + t.day / 366 + t.hour / 366 / 24
-
-        def time_vector_to_portion_of_day_vector(time_vector):
-            return np.array([date_time_to_portion_of_day(timevector_to_datetime(t)) for t in time_vector])
-
-        def time_vector_to_portion_of_year_vector(time_vector):
-            return np.array([date_time_to_portion_of_year(timevector_to_datetime(t)) for t in time_vector])
-
-        def time_vector_to_portion_of_year_scalar(time_vector):
-            return date_time_to_portion_of_year(timevector_to_datetime(time_vector[0]))
-
         self.path = path
         self.name = os.path.split(path)[-1]
         self.frequencies  = load_meta(path, 'frequencies').squeeze().astype(int)
@@ -95,10 +66,6 @@ class Echogram():
         self._seabed = None
 
         self.date = np.datetime64(self.name[9:13] + '-' + self.name[13:15] + '-' + self.name[15:17] + 'T' + self.name[19:21] + ':' + self.name[21:23]) #'yyyy-mm-ddThh:mm'
-
-        self.portion_of_day_vector = self.time_vector % 1
-        self.portion_of_year_scalar = time_vector_to_portion_of_year_scalar(self.time_vector)
-        self.time_vector_diff = timevector_to_diff(self.time_vector)
 
         #Check which labels that are included
         self.label_types_in_echogram = np.unique([o['fish_type_index'] for o in self.objects])
@@ -403,9 +370,9 @@ class Echogram():
         if self._seabed is not None and not ignore_saved:
             return self._seabed
 
-        elif os.path.isfile(os.path.join(self.path, 'seabed.npy')) and not ignore_saved:
-            self._seabed = np.load(os.path.join(self.path, 'seabed.npy'))
-            return self._seabed
+        # elif os.path.isfile(os.path.join(self.path, 'seabed.npy')) and not ignore_saved:
+        #     self._seabed = np.load(os.path.join(self.path, 'seabed.npy'))
+        #     return self._seabed
 
         else:
 
@@ -1062,25 +1029,19 @@ def get_data_readers(years='all', frequencies=[18, 38, 120, 200], minimum_shape=
         return get_echograms(years, frequencies, minimum_shape)
     elif mode == 'zarr':
         return get_zarr_files(frequencies, minimum_shape)
-#
-# if __name__ == '__main__':
-   #  # Memmap reader
-   #  readers = get_data_readers(years=[2017], mode='memm')
-   #  #reader = [reader for reader in readers if reader.name == '2017843-D20170426-T063457']
-   #  reader = [reader for reader in readers if reader.name == '2017843-D20170426-T111710']
-   #  reader = reader[0]
-   #  print(reader.shape)
-   #  seabed = reader.visualize(frequencies=[200], show_grid=False)
-   #
-   #  reader.get_seabed()
-   # # Zarr reader
-   #  #readers = get_data_readers(mode='zarr', frequencies=[18000, 38000, 120000, 200000])
-   #  #reader = readers[0]
-   #  #print(reader.shape)
-   #  #seabed = reader.get_seabed(raw_file=reader.raw_file_included[0])
-   #  #reader.visualize(raw_file=reader.raw_file_included[0], frequencies=[200000])
-   #  #readers = get_data_readers(mode='zarr', frequencies=[18000, 38000, 120000, 200000])
-   #  #reader = readers[0]
-   #  #print(reader.shape)
-   #  #seabed = reader.get_seabed(raw_file=reader.raw_file_included[0])
-   #  #reader.visualize(raw_file=reader.raw_file_included[0], frequencies=[200000])
+
+if __name__ == '__main__':
+    # Memmap reader
+    readers = get_data_readers(years=[2017], mode='memm')
+    #reader = [reader for reader in readers if reader.name == '2017843-D20170426-T063457']
+    reader = [reader for reader in readers if reader.name == '2017843-D20170513-T081028']
+    reader = reader[0]
+    print(reader.shape)
+    seabed = reader.visualize(frequencies=[200], show_grid=False)
+
+   # Zarr reader
+    readers = get_data_readers(mode='zarr', frequencies=[18000, 38000, 120000, 200000])
+    reader = readers[0]
+    print(reader.shape)
+    seabed = reader.get_seabed(raw_file=reader.raw_file_included[0])
+    reader.visualize(raw_file=reader.raw_file_included[0], frequencies=[200000])

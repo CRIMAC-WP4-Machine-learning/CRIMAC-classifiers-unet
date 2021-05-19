@@ -20,9 +20,7 @@ import json
 import os
 import sys
 import yaml
-import torch
-import random
-import numpy as np
+
 
 try:
     with open(os.path.join(os.path.dirname(__file__), 'setpyenv.json')) as file:
@@ -30,11 +28,6 @@ try:
     setup_file = json.loads(json_data)
     if 'syspath' in setup_file.keys():
         sys.path.append(setup_file["syspath"])
-
-    # set random seed
-    np.random.seed(10)
-    torch.manual_seed(10)
-    random.seed(10)
 
 except:
     class SetupFileIsMissing(Exception): pass
@@ -68,10 +61,6 @@ def path_to_trained_model():
     # Directory path to trained models
     return setup_file['path_to_trained_model']
 
-def path_to_baseline_model():
-    # Directory path for trained baseline model
-    return setup_file['path_to_baseline_model']
-
 def path_to_zarr_files():
     # Directory path to zarr files
     return setup_file['path_to_zarr_files']
@@ -82,7 +71,7 @@ def path_for_saving_figs():
 
 def path_for_saving_preds_labels():
     # Directory path for saving figures relating to results evaluation
-    return setup_file.get('path_for_saving_preds_labels')
+    return setup_file['path_for_saving_preds_labels']
 
 def pipeline_config():
     return load_yaml_config(os.path.join(os.path.dirname(__file__), 'pipeline_config.yaml'))

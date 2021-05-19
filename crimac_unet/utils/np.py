@@ -61,7 +61,7 @@ def nearest_interpolation(input_array, output_inds, boundary_correction = True, 
     if input_array.ndim == 1:
         return _nearest_interpolation_1D(input_array, output_inds, boundary_correction=boundary_correction, out_shape=out_shape)
     elif input_array.ndim == 2:
-        return _nearest_interpolation_2D(input_array, output_inds, boundary_correction=boundary_correction, boundary_val=boundary_val, out_shape=out_shape)
+        return _nearest_interpolation_2D(input_array, output_inds, boundary_correction=boundary_correction, boundary_val=boundary_val,out_shape=out_shape)
     elif input_array.ndim == 3:
         return _nearest_interpolation_3D(input_array, output_inds, boundary_correction = boundary_correction,out_shape=out_shape)
 

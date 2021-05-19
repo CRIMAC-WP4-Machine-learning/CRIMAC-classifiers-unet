@@ -25,14 +25,11 @@ from torchvision import transforms
 class Dataset():
 
     def __init__(self, samplers, window_size, frequencies,
-                 use_metadata=False,
-                 meta_channels=[],
                  n_samples=1000,
                  sampler_probs=None,
                  augmentation_function=None,
                  label_transform_function=None,
                  data_transform_function=None):
-
         """
         A dataset is used to draw random samples
         :param samplers: The samplers used to draw samples
@@ -49,18 +46,10 @@ class Dataset():
         self.window_size = window_size
         self.n_samples = n_samples
         self.frequencies = frequencies
-        self.use_metadata = use_metadata
-        self.meta_channels = meta_channels
         self.sampler_probs = sampler_probs
         self.augmentation_function = augmentation_function
         self.label_transform_function = label_transform_function
         self.data_transform_function = data_transform_function
-
-        if self.use_metadata:
-            # Check valid meta_channels input
-            assert all([isinstance(cond, bool) for cond in self.meta_channels.values()])
-            assert set(self.meta_channels.keys()) == \
-                   {'portion_year', 'portion_day', 'depth_rel', 'depth_abs_surface', 'depth_abs_seabed', 'time_diff'}
 
         # Normalize sampling probabilities
         if self.sampler_probs is None:
@@ -77,12 +66,12 @@ class Dataset():
         # Draw coordinate and echogram with sampler
         center_location, echogram = sampler.get_sample()
 
+        # Adjust coordinate by random shift in y and x direction
+        center_location[0] += np.random.randint(-self.window_size[0] // 2, self.window_size[0] // 2 + 1)
+        center_location[1] += np.random.randint(-self.window_size[1] // 2, self.window_size[1] // 2 + 1)
+
         # Get data/labels-patches
-        if self.use_metadata:
-            data, meta, labels = get_crop(echogram, center_location, self.window_size, self.frequencies,
-                                          self.use_metadata, self.meta_channels)
-        else:
-            data, labels = get_crop(echogram, center_location, self.window_size, self.frequencies, False, [])
+        data, labels = get_crop(echogram, center_location, self.window_size, self.frequencies)
 
         # Apply augmentation
         if self.augmentation_function is not None:
@@ -97,21 +86,18 @@ class Dataset():
             data, labels, echogram, frequencies = self.data_transform_function(data, labels, echogram, self.frequencies)
 
         labels = labels.astype('int16')
-        if self.meta_channels == []:
-            return data, labels
-        else:
-            return np.concatenate((data, meta), axis=0), labels
+        return data, labels
 
     def __len__(self):
         return self.n_samples
 
-def get_crop(reader, center_location, window_size, freqs, use_metadata, meta_channels):
+def get_crop(reader, center_location, window_size, freqs):
     if isinstance(reader, Echogram):
-        return get_crop_memmap(reader, center_location, window_size, freqs, use_metadata, meta_channels)
+        return get_crop_memmap(reader, center_location, window_size, freqs)
     elif isinstance(reader, DataReaderZarr):
         return get_crop_zarr(reader, center_location, window_size, freqs)
 
-def get_crop_memmap(echogram, center_location, window_size, freqs, use_metadata=False, meta_channels=[]):
+def get_crop_memmap(echogram, center_location, window_size, freqs):
     """
     Returns a crop of data around the pixels specified in the center_location.
     """
@@ -135,73 +121,7 @@ def get_crop_memmap(echogram, center_location, window_size, freqs, use_metadata=
 
     labels = nearest_interpolation(echogram.label_memmap(), grid, boundary_val=-100, out_shape=window_size)
 
-    # Case with metadata
-    if use_metadata:
-        meta = []
-        ### Add channels with metadata ###
-        # Portion of the year, resp. the day, represented with scalar value, approx. constant within one crop.
-
-        # Portion of the year (scalar)
-        if meta_channels['portion_year']:
-            portion_year = echogram.portion_of_year_scalar
-            meta.append(np.full(window_size, portion_year)[None, ...])
-
-        # Portion of the day (scalar): represented as [sin(t), cos(t)] to make time continuous at midnight (i.e. modulo 24 hours)
-        if meta_channels['portion_day']:
-            portion_day_idx = center_location[1]
-            if portion_day_idx < 0:
-                portion_day_idx = 0
-            if portion_day_idx >= echogram.portion_of_day_vector.size:
-                portion_day_idx = -1
-            portion_day = echogram.portion_of_day_vector[portion_day_idx]
-            meta.append(np.full(window_size, np.sin(2 * np.pi * portion_day))[None, ...])
-            meta.append(np.full(window_size, np.cos(2 * np.pi * portion_day))[None, ...])
-
-        # Relative time vector
-        if meta_channels['time_diff']:
-            crop_idx = np.arange(center_location[1] - window_size[1] // 2, center_location[1] + window_size[1] // 2)
-            crop_idx[crop_idx < 0] = 0
-            crop_idx[crop_idx >= echogram.time_vector_diff.size] = -1
-
-            time_vector_diff_for_current_crop = echogram.time_vector_diff[crop_idx]
-            out_array = time_vector_diff_for_current_crop.reshape(1, -1) * np.ones((window_size[0], 1))
-            meta.append(out_array[None, ...])
-
-        # Depth channels: Relative, absolute distance to surface, absolute distance to seabed
-        if any([meta_channels[kw] for kw in ['depth_rel', 'depth_abs_surface', 'depth_abs_seabed']]):
-            seabed = echogram._seabed
-            crop_idx = [
-                np.arange(center_location[0] - window_size[0] // 2, center_location[0] + window_size[0] // 2),
-                np.arange(center_location[1] - window_size[1] // 2, center_location[1] + window_size[1] // 2)
-            ]
-            crop_idx[1][crop_idx[1] < 0] = 0
-            crop_idx[1][crop_idx[1] >= seabed.size] = -1
-
-            if meta_channels['depth_rel']:
-                depth_rel = crop_idx[0].reshape(-1, 1) / seabed[crop_idx[1]].reshape(1, -1)
-                assert depth_rel.shape == tuple(window_size)
-                meta.append(depth_rel[None, ...])
-
-            if meta_channels['depth_abs_surface']:
-                depth_abs_surface = crop_idx[0].reshape(-1, 1) * np.ones((1, window_size[1])) / window_size[0] # Div by w_size to get range in the order of [0, 1]
-                assert depth_abs_surface.shape == tuple(window_size)
-                meta.append(depth_abs_surface[None, ...])
-
-            if meta_channels['depth_abs_seabed']:
-                depth_abs_seabed =  (seabed[crop_idx[1]].reshape(1, -1) - crop_idx[0].reshape(-1, 1)) / window_size[0] # Div by w_size to get range in the order of [0, 1]
-                assert depth_abs_seabed.shape == tuple(window_size)
-                meta.append(depth_abs_seabed[None, ...])
-
-        ###
-
-        if meta != []:
-            meta = np.concatenate(meta, 0)
-
-        return channels, meta, labels
-
-    # Case without metadata
-    else:
-        return channels, labels
+    return channels, labels
 
 
 def get_crop_zarr(zarr_file, center_loc, window_size, freqs):

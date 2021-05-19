@@ -80,5 +80,3 @@ if __name__ == '__main__':
                 print(f"Executed time for prediction (s): {np.round((time.time() - start), 2)}")
                 ech.visualize(predictions=seg, frequencies=frequencies[:2],
                                show_labels=False)
-
-

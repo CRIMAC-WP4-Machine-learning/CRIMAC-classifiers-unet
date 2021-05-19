@@ -112,8 +112,4 @@ class SchoolSeabedZarr():
 
         x += start_idx
 
-        # Adjust coordinate by random shift in y and x direction
-        x += np.random.randint(-self.window_size[0] // 2, self.window_size[0] // 2 + 1)
-        y += np.random.randint(-self.window_size[1] // 2, self.window_size[1] // 2 + 1)
-
         return [x, y], zarr_file

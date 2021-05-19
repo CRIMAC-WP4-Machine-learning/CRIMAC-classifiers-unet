@@ -22,7 +22,6 @@ import numpy as np
 import pickle
 import pandas as pd
 from sklearn.metrics import auc, roc_curve, precision_recall_curve
-from tqdm import tqdm
 
 import torch
 import torch.nn as nn
@@ -33,14 +32,13 @@ from torch.utils.data import DataLoader
 from data.echogram import get_data_readers
 from batch.dataset import Dataset
 from batch.samplers.background import Background, BackgroundZarr
-from batch.samplers.background_intensity import HighIntensityBackground
 from batch.samplers.seabed import Seabed, SeabedZarr
 from batch.samplers.school import School, SchoolZarr
 from batch.samplers.school_seabed import SchoolSeabed, SchoolSeabedZarr
 from batch.data_augmentation.flip_x_axis import flip_x_axis
 from batch.data_augmentation.add_noise import add_noise
 from batch.data_transforms.remove_nan_inf import remove_nan_inf
-from batch.data_transforms.db_with_limits import db_with_limits, db_with_limits_scaled
+from batch.data_transforms.db_with_limits import db_with_limits
 from batch.label_transforms.convert_label_indexing import convert_label_indexing
 from batch.label_transforms.refine_label_boundary import refine_label_boundary
 from batch.combine_functions import CombineFunctions
@@ -48,14 +46,13 @@ from batch.combine_functions import CombineFunctions
 import models.unet as models
 
 import matplotlib.pyplot as plt
-import matplotlib.colors as mcolors
 from paths import *
-from utils.losses import FocalLoss, DiceLoss, CombinedCEFocalLoss
 import dask
 import xarray as xr
 from numcodecs import Blosc
 import shutil
 dask.config.set(scheduler='synchronous')
+
 
 class SegPipe():
     """ Object to represent segmentation training-prediction pipeline """
@@ -64,23 +61,14 @@ class SegPipe():
         self.model = None
         self.model_is_loaded = False
         self.unit_frequency = opt.unit_frequency
-        self.frequencies = opt.frequencies
-        if self.frequencies == 'all':
+        if self.unit_frequency == 'kHz':
             self.frequencies = [18, 38, 120, 200]
-        if self.unit_frequency == 'Hz':
-            self.frequencies = [freq*1000 for freq in self.frequencies]
-        elif self.unit_frequency != 'kHz':
+        elif self.unit_frequency == 'Hz':
+            self.frequencies = [18000, 38000, 120000, 200000]
+        else:
             print("unit_frequency should be 'Hz' or 'kHz'")
-
         self.window_dim = opt.window_dim
         self.window_size = [self.window_dim, self.window_dim]
-        self.loss_type = opt.loss_type
-        self.validate = opt.validate
-        self.use_metadata = opt.use_metadata
-        self.fusion = opt.fusion
-        self.fusion_input = opt.fusion_input
-        self.mixin = opt.mixin
-        self.meta_channels = opt.meta_channels
         self.partition = opt.partition
         self.data_mode = opt.data_mode
         self.echograms = get_data_readers(frequencies=self.frequencies, minimum_shape=self.window_dim,
@@ -101,9 +89,6 @@ class SegPipe():
         self.dir_save_preds_labels = path_for_saving_preds_labels()
         self.save_labels = opt.save_labels
         self.labels_available = opt.labels_available
-        self.val_surveys = opt.val_surveys
-        self.selected_surveys = opt.selected_surveys
-        self.mixin_intermediate = opt.mixin_intermediate
 
     def define_data_augmentation(self):
         """ Returns data augmentation functions to be applied when training """
@@ -112,16 +97,12 @@ class SegPipe():
 
     def define_data_transform(self):
         """ Returns data transform functions to be applied when training """
-
-        if self.use_metadata == True:
-            data_transform = CombineFunctions([remove_nan_inf, db_with_limits_scaled])
-        else:
-            data_transform = CombineFunctions([remove_nan_inf, db_with_limits])
+        data_transform = CombineFunctions([remove_nan_inf, db_with_limits])
         return data_transform
 
     def define_label_transform(self):
         """ Returns label transform functions to be applied when training """
-        label_transform = CombineFunctions([convert_label_indexing, refine_label_boundary(frequencies=self.frequencies)])
+        label_transform = CombineFunctions([convert_label_indexing, refine_label_boundary])
         return label_transform
 
     def load_model_params(self):
@@ -140,51 +121,6 @@ class SegPipe():
                 self.model.eval()
             self.model_is_loaded = True
 
-    def find_lr_for_model_train(self, dataloader_train, lr):
-
-        self.model.to(self.device)
-
-        assert self.loss_type in ['CE', 'Focal', 'Dice', 'Combined'], \
-            "Parameter loss_type must be equal to 'CE' OR 'Focal' OR 'Dice' OR 'Combined'"
-
-        if self.loss_type == 'CE':
-            criterion = nn.CrossEntropyLoss(weight=torch.Tensor([10, 300, 250]).to(self.device))
-        elif self.loss_type == 'Focal':
-            criterion = FocalLoss(weight=torch.Tensor([10, 300, 250]).to(self.device), gamma=3)
-        elif self.loss_type == 'Dice':
-            criterion = DiceLoss(weight=None)
-        elif self.loss_type == 'Combined':
-            criterion = CombinedCEFocalLoss(weight=torch.Tensor([10, 300, 250]).to(self.device), gamma=3,
-                                            t1=0.4, t2=1.6)
-
-        optimizer = optim.SGD(self.model.parameters(), lr=lr, momentum=self.momentum)
-
-        for i, (inputs_train, labels_train) in enumerate(dataloader_train):
-            if i > 50:
-                break
-
-            print("[Step %d/%d]" % (i+1, 50))
-            # Load train data and transfer from numpy to pytorch
-            inputs_train = inputs_train.float().to(self.device)
-            labels_train = labels_train.long().to(self.device)
-
-            # Forward + backward + optimize
-            self.model.train()
-            optimizer.zero_grad()
-            if self.fusion == False and self.mixin == False and self.mixin_intermediate == False:
-                outputs_train = self.model(inputs_train)
-            else:
-                outputs_train = self.model(inputs_train[:, :len(self.frequencies), :, :],
-                                           inputs_train[:, len(self.frequencies):, :, :],
-                                           )
-
-            loss_train = criterion(outputs_train, labels_train)
-            loss_train.backward()
-            optimizer.step()
-
-        # Update loss count for train set
-        return loss_train.item()
-
     def train_model(self, dataloader_train, dataloader_test):
         """
         Model training and saving of the model at the last iteration
@@ -192,13 +128,10 @@ class SegPipe():
         :param dataloader_test: Validation set dataloader
         """
 
-        from utils.logger import TensorboardLogger
         assert not os.path.exists(self.path_model_params), \
             'Attempting to train a model that already exists: ' + self.model_name + '\n' \
                                                                                     'Use a different model name or delete the model params file: ' + self.path_model_params
-        logger = TensorboardLogger(name=self.model_name,
-                                   log_dir='/'.join(self.path_model_params.split('/')[:-1]) + '/log/',
-                                   include_datetime=False)
+
         label_types = [1, 27]
 
         running_loss_train = 0.0
@@ -206,22 +139,10 @@ class SegPipe():
 
         self.model.to(self.device)
 
-
-        assert self.loss_type in ['CE', 'Focal', 'Dice', 'Combined'], \
-                "Parameter loss_type must be equal to 'CE' OR 'Focal' OR 'Dice' OR 'Combined'"
-
-        if self.loss_type == 'CE':
-            criterion = nn.CrossEntropyLoss(weight=torch.Tensor([10, 300, 250]).to(self.device))
-        elif self.loss_type == 'Focal':
-            criterion = FocalLoss(weight=torch.Tensor([10, 300, 250]).to(self.device), gamma=3)
-        elif self.loss_type == 'Dice':
-            criterion = DiceLoss(weight=None)
-        elif self.loss_type == 'Combined':
-            criterion = CombinedCEFocalLoss(weight=torch.Tensor([10, 300, 250]).to(self.device), gamma=3,
-                                            t1=0.4, t2=1.6)
-
+        criterion = nn.CrossEntropyLoss(weight=torch.Tensor([10, 300, 250]).to(self.device))
         optimizer = optim.SGD(self.model.parameters(), lr=self.lr, momentum=self.momentum)
         scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=self.lr_reduction)
+        # scheduler.step()
 
         # Train model
         for i, (inputs_train, labels_train) in enumerate(dataloader_train):
@@ -234,44 +155,84 @@ class SegPipe():
             # Forward + backward + optimize
             self.model.train()
             optimizer.zero_grad()
-
-            if self.fusion == False and self.mixin == False and self.mixin_intermediate == False:
-                outputs_train = self.model(inputs_train)
-            else:
-                outputs_train = self.model(inputs_train[:, :len(self.frequencies), :, :],
-                                           inputs_train[:, len(self.frequencies):, :, :],
-                                           )
+            outputs_train = self.model(inputs_train)
             loss_train = criterion(outputs_train, labels_train)
             loss_train.backward()
             optimizer.step()
 
             # Update loss count for train set
             running_loss_train += loss_train.item()
-            logger.log_scalar(tag='loss_train', value=loss_train.item(), step=i + 1)
 
-            # Validation
-            if self.validate:
-                if (i + 1) % self.log_step == 0:
-                    assert self.eval_mode in ['all', 'region', 'fish'], \
-                    "Parameter 'eval_mode' must equal to 'all' or 'region' or 'fish'"
-                    self.validate_model(logger, i, dataloader_test, criterion, running_loss_test, running_loss_train)
-                    ## Reset counts to zero
+            # Log loss and accuracy
+            if (i + 1) % self.log_step == 0:
+                self.model.eval()
+                with torch.no_grad():
+                    labels_true = []
+                    labels_correct = []
+                    labels_predict = []
+                    for inputs_test, labels_test in dataloader_test:
+                        # Load test data and transfer from numpy to pytorch
+                        inputs_test = inputs_test.float().to(self.device)
+                        labels_test = labels_test.long().to(self.device)
+
+                        # Evaluate test data
+                        outputs_test = self.model(inputs_test)
+                        loss_test = criterion(outputs_test, labels_test)
+
+                        # Update loss count for test set
+                        running_loss_test += loss_test.item()
+
+                        predicted_classes_test = \
+                            np.argmax(F.softmax(outputs_test, dim=1).cpu().numpy(), axis=1).reshape(-1)
+                        labels_test = labels_test.cpu().numpy().reshape(-1)
+
+                        # Add correctly predicted classes for calculating accuracy
+                        labels_true += list(labels_test)
+                        labels_correct += list(labels_test[predicted_classes_test == labels_test])
+                        labels_predict += list(predicted_classes_test)
+
+                    labels_true = np.array(labels_true)
+                    labels_correct = np.array(labels_correct)
+                    labels_predict = np.array(labels_predict)
+
+                    confusion = np.zeros((1 + len(label_types), 1 + len(label_types)))
+                    for p in range(1 + len(label_types)):
+                        for t in range(1 + len(label_types)):
+                            confusion[p, t] = np.sum((labels_predict == p) & (labels_true == t))
+                    confusion = confusion + 1  # Avoid division by zero
+
+                    confusion_portion_of_true = confusion / np.sum(confusion, axis=0, keepdims=True)
+                    confusion_portion_of_pred = confusion / np.sum(confusion, axis=1, keepdims=True)
+
+                    # '''
+                    classes_all = \
+                        np.array([np.sum(labels_true == c) for c in range(len([0] + label_types))], dtype=np.float32)
+                    classes_correct = \
+                        np.array([np.sum(labels_correct == c) for c in range(len([0] + label_types))], dtype=np.float32)
+                    classes_all += 1e-10
+                    classes_accuracy = classes_correct / classes_all
+                    # '''
+
+                    print('{:>6} {:>2} {:4.3f} {:4.3f}'.format(
+                        i + 1,
+                        '  ',
+                        running_loss_train / self.log_step,
+                        running_loss_test / self.test_iter,
+                    ))
+                    np.set_printoptions(precision=3, suppress=True, floatmode='fixed', linewidth=800)
+                    print(classes_accuracy)
+                    print(confusion_portion_of_true)
+                    print(confusion_portion_of_pred)
+
+                    # Reset counts to zero
                     running_loss_train = 0.0
                     running_loss_test = 0.0
-            else: # Validate only once at iteration 7000
-                if (i + 1) % int(len(dataloader_train)*0.7) == 0:
-                    assert self.eval_mode in ['all', 'region', 'fish'], \
-                    "Parameter 'eval_mode' must equal to 'all' or 'region' or 'fish'"
-                    self.validate_model(logger, i, dataloader_test, criterion, running_loss_test, running_loss_train)
-                    ## Reset counts to zero
-                    running_loss_train = 0.0
-                    running_loss_test = 0.0
 
-            # Update learning rate every 'lr_step' number of batches
-            if (i + 1) % self.lr_step == 0:
-                print(i + 1)
-                scheduler.step()
-                print('lr:', [group['lr'] for group in optimizer.param_groups])
+                # Update learning rate every 'lr_step' number of batches
+                if (i + 1) % self.lr_step == 0:
+                    print(i + 1)
+                    scheduler.step()
+                    print('lr:', [group['lr'] for group in optimizer.param_groups])
 
         print('Training complete')
         self.model_is_loaded = True
@@ -281,240 +242,7 @@ class SegPipe():
             torch.save(self.model.state_dict(), self.path_model_params)
             print('Trained model parameters saved to file: ' + self.path_model_params)
 
-
-    def validate_model(self, logger, i, dataloader_test, criterion, running_loss_test, running_loss_train):
-        # TODO Write documentation of function
-
-        print('##################')
-        print('Start validation')
-        print('##################')
-        preds = []
-        labels = []
-        echs_val = [e for e in self.echograms if e.year in self.val_surveys]
-        with torch.no_grad():
-            count_plot = 0
-            self.model.eval()
-            for iter_ech, ech in enumerate(echs_val):
-                print("[Prediction step %d/%d]" % (iter_ech + 1, len(echs_val)))
-                seg, label = self.predict_echogram(ech, model_train=True)
-
-                # Log echogram segmentations for 3 different echograms having fish
-                if np.any(label == 1) and count_plot < 3:
-                    print('Saving segmentation plot overlaying labels for echogram', ech.name)
-                    cmap_labels = mcolors.ListedColormap(['yellow', 'black', 'red', 'green'])
-                    boundaries_labels = [-200, -0.5, 0.5, 1.5, 2.5]
-                    norm_labels = mcolors.BoundaryNorm(boundaries_labels, cmap_labels.N, clip=True)
-
-                    fig, ax = plt.subplots(1, figsize=(16, 8))
-                    ax.imshow(label, aspect='auto', cmap=cmap_labels, norm=norm_labels)
-                    ax.imshow(np.power(seg, 1.0), cmap='viridis', aspect='auto', vmin=0, vmax=1, alpha=0.5)
-                    ax.set_title('Segmentation overlaying labels')
-                    plt.close(fig)
-                    name_plot = 'val_seg_' + ech.name
-                    logger.log_plot(name_plot, fig, i + 1)
-                    count_plot += 1
-
-                preds += [seg.ravel()]
-
-                if self.eval_mode == 'region':
-                    # TODO This currently works only if memm data is selected, extend to zarr
-                    eval_mask = self.get_extended_label_mask_for_echogram(ech, extend_size=20)
-                    # Set labels to -1 if not included in evaluation mask
-                    label[eval_mask != True] = -1
-
-                    # 'Fish' evaluation mode: Set all background pixels to 'ignore', i.e. only evaluate the discrimination on species
-
-                if self.eval_mode == 'fish':
-                    label[label == 0] = -1
-
-                labels += [label.ravel()]
-
-            preds = np.hstack(preds)
-            labels = np.hstack(labels)
-
-            # Precision, recall, F1
-            print("Started computing metrics")
-            start = time.time()
-            precision, recall, thresholds = precision_recall_curve(labels[np.where(labels != -1)],
-                                                                   preds[np.where(labels != -1)],
-                                                                   pos_label=1)
-
-            F1 = 2 * (precision * recall) / (precision + recall)
-            F1[np.invert(np.isfinite(F1))] = 0
-
-            # Log metrics
-            logger.log_scalar(tag='F1_score_test', value=F1[np.argmax(F1)], step=i + 1)
-            logger.log_scalar(tag='precision_test', value=precision[np.argmax(F1)], step=i + 1)
-            logger.log_scalar(tag='recall_test', value=recall[np.argmax(F1)], step=i + 1)
-            print(f"Finished computing metrics in (min): {np.round((time.time() - start) / 60, 2)}")
-
-            # Log pr curve
-            fig, ax = plt.subplots(1, figsize=(8, 8))
-            ticks = [0, 0.2, 0.4, 0.6, 0.8, 1.0]
-            ax.tick_params(labelsize=6)
-            ax.set_xlabel("Recall", fontsize=8)
-            ax.set_ylabel("Precision", fontsize=8)
-            ax.set_xticks(ticks)
-            ax.scatter(recall, precision, s=2)
-            ax.set_xlim(-0.06, 1.06)
-            ax.set_ylim(-0.06, 1.06)
-            plt.close(fig)
-            name_plot = 'val_pr_curve'
-            logger.log_plot(name_plot, fig, i + 1)
-
-            # Save best model in terms of best validation F1 score
-            logger.log_save_model(model=self.model, filename="model_best_F1",
-                                  step=i + 1, save_on_max=F1[np.argmax(F1)])
-
-            # Log running_loss for train and test
-            print("Started computing test loss")
-            start = time.time()
-            for inputs_test, labels_test in dataloader_test:
-                # Load test data and transfer from numpy to pytorch
-                inputs_test = inputs_test.float().to(self.device)
-                labels_test = labels_test.long().to(self.device)
-
-                # Evaluate test data
-                if self.mixin:
-                    outputs_test = self.model(inputs_test[:, :len(self.frequencies), :, :],
-                                              inputs_test[:, len(self.frequencies):, :, :])
-                if self.fusion:
-                    outputs_test = self.model(inputs_test[:, :len(self.frequencies), :, :],
-                                              inputs_test[:, len(self.frequencies):, :, :],
-                                              )
-                if self.fusion == False and self.mixin == False:
-                    outputs_test = self.model(inputs_test)
-                loss_test = criterion(outputs_test, labels_test)
-                # Update loss count for test set
-                running_loss_test += loss_test.item()
-
-            logger.log_scalar(tag='running_loss_train', value=running_loss_train / self.log_step, step=i + 1)
-            logger.log_scalar(tag='running_loss_test', value=running_loss_test / self.test_iter, step=i + 1)
-            print(f"Finished computing test loss in (s): {np.round((time.time() - start), 2)}")
-
-        print('#####################')
-        print('Validation completed')
-        print('#####################')
-
-    def test_model(self):
-        # TODO Write documentation of function
-
-        print('##################')
-        print('Start testing')
-        print('##################')
-
-        df = []
-        for survey in self.selected_surveys:
-            print(f"Testing survey {survey}")
-            echs_test = [e for e in self.echograms if e.year == survey]
-            preds = []
-            labels = []
-            with torch.no_grad():
-                self.model.eval()
-                for iter_ech, ech in enumerate(echs_test):
-                    print("[Prediction step %d/%d]" % (iter_ech + 1, len(echs_test)))
-                    seg, label = self.predict_echogram(ech, model_train=False)
-                    preds += [seg.ravel()]
-
-                    if self.eval_mode == 'region':
-                        # TODO This currently works only if memm data is selected, extend to zarr
-                        eval_mask = self.get_extended_label_mask_for_echogram(ech, extend_size=20)
-                        # Set labels to -1 if not included in evaluation mask
-                        label[eval_mask != True] = -1
-
-                        # 'Fish' evaluation mode: Set all background pixels to 'ignore', i.e. only evaluate the discrimination on species
-
-                    if self.eval_mode == 'fish':
-                        label[label == 0] = -1
-
-                    labels += [label.ravel()]
-
-            preds = np.hstack(preds).astype(np.float16)
-            labels = np.hstack(labels).astype(np.int8)
-
-            # Precision, recall, F1
-            print("Started computing metrics")
-            start = time.time()
-            precision, recall, thresholds = precision_recall_curve(labels[np.where(labels != -1)],
-                                                                   preds[np.where(labels != -1)],
-                                                                   pos_label=1)
-
-            print(f"Finished computing metrics in (min): {np.round((time.time() - start) / 60, 2)}")
-
-            df.append(pd.DataFrame({"Survey": [survey]*len(precision),
-                               "precision": precision,
-                               "recall": recall,
-                               })
-                             )
-        df = pd.concat(df)
-        df.to_csv(self.dir_savefig + 'Test_metrics_' + self.eval_mode + '_' + \
-                                                  self.path_model_params.split('/')[-1].split('.pt')[0] + \
-                                                  '.csv', index=False
-                                                  )
-
-
-    def get_patch_metadata_channels(self, echogram, center_location, window_size, meta_kw):
-
-        ### Get channels with metadata ###
-        # Portion of the year, resp. the day, represented with scalar value, approx. constant within one crop.
-
-        meta = []
-
-        # Portion of the year (scalar)
-        if meta_kw['portion_year']:
-            portion_year = echogram.portion_of_year_scalar
-            meta.append(np.full(window_size, portion_year)[None, ...])
-
-        # Portion of the day (scalar): represented as [sin(t), cos(t)] to make time continuous at midnight (i.e. modulo 24 hours)
-        if meta_kw['portion_day']:
-            portion_day_idx = center_location[1]
-            if portion_day_idx < 0:
-                portion_day_idx = 0
-            if portion_day_idx >= echogram.portion_of_day_vector.size:
-                portion_day_idx = -1
-            portion_day = echogram.portion_of_day_vector[portion_day_idx]
-            meta.append(np.full(window_size, np.sin(2 * np.pi * portion_day))[None, ...])
-            meta.append(np.full(window_size, np.cos(2 * np.pi * portion_day))[None, ...])
-
-        # Relative time vector
-        if meta_kw['time_diff']:
-            crop_idx = np.arange(center_location[1] - window_size[1] // 2, center_location[1] + window_size[1] // 2)
-            crop_idx[crop_idx < 0] = 0
-            crop_idx[crop_idx >= echogram.time_vector_diff.size] = -1
-
-            time_vector_diff_for_current_crop = echogram.time_vector_diff[crop_idx]
-            out_array = time_vector_diff_for_current_crop.reshape(1, -1) * np.ones((window_size[0], 1))
-            meta.append(out_array[None, ...])
-
-        # Depth channels: Relative, absolute distance to surface, absolute distance to seabed
-        if any([meta_kw['depth_rel'], meta_kw['depth_abs_surface'], meta_kw['depth_abs_seabed']]):
-            seabed = echogram.get_seabed(save_to_file=False)
-            crop_idx = [
-                np.arange(center_location[0] - window_size[0] // 2, center_location[0] + window_size[0] // 2),
-                np.arange(center_location[1] - window_size[1] // 2, center_location[1] + window_size[1] // 2)
-            ]
-            crop_idx[1][crop_idx[1] < 0] = 0
-            crop_idx[1][crop_idx[1] >= seabed.size] = -1
-
-            if meta_kw['depth_rel']:
-                depth_rel = crop_idx[0].reshape(-1, 1) / seabed[crop_idx[1]].reshape(1, -1)
-                assert depth_rel.shape == tuple(window_size)
-                meta.append(depth_rel[None, ...])
-
-            if meta_kw['depth_abs_surface']:
-                depth_abs_surface = crop_idx[0].reshape(-1, 1) * np.ones((1, window_size[1])) / window_size[
-                    0]  # Div by w_size to get range interval in approx order of magnitude [0, 1]
-                assert depth_abs_surface.shape == tuple(window_size)
-                meta.append(depth_abs_surface[None, ...])
-
-            if meta_kw['depth_abs_seabed']:
-                depth_abs_seabed = (seabed[crop_idx[1]].reshape(1, -1) - crop_idx[0].reshape(-1, 1)) / window_size[0]
-                assert depth_abs_seabed.shape == tuple(window_size)
-                meta.append(depth_abs_seabed[None, ...])
-
-        return np.concatenate(meta, axis=0)
-
-    def predict_echogram(self, ech, raw_file=None, sandeel_only=True, model_train=False):
+    def predict_echogram(self, ech, raw_file=None, sandeel_only=True):
         """
         Predict single echogram based on the sandeel survey
         :param ech: echogram object
@@ -532,9 +260,7 @@ class SegPipe():
             Each patch is segmented, and then stacked to create segmentation of the full echogram
             """
 
-
-            def _get_patch_prediction(patch, meta=None, fusion_input=False):
-
+            def _get_patch_prediction(patch):
                 '''
                 Converts numpy data patch to torch tensor, predicts with model, and converts back to numpy.
                 :param patch: (np.array) Input data patch
@@ -545,16 +271,7 @@ class SegPipe():
                 with torch.no_grad():
                     patch = torch.Tensor(patch).float()
                     patch = patch.to(self.device)
-                    if meta is not None:
-                        meta = np.expand_dims(np.moveaxis(meta, -1, 0), 0)
-                        meta = torch.Tensor(meta).float()
-                        meta = meta.to(self.device)
-                        if fusion_input:
-                            patch = F.softmax(self.model(patch, meta, fusion_input), dim=1).cpu().numpy()
-                        else:
-                            patch = F.softmax(self.model(patch, meta), dim=1).cpu().numpy()
-                    else:
-                        patch = F.softmax(self.model(patch), dim=1).cpu().numpy()
+                    patch = F.softmax(self.model(patch), dim=1).cpu().numpy()
                 patch = np.moveaxis(patch.squeeze(0), 0, -1)
                 return patch
 
@@ -592,22 +309,7 @@ class SegPipe():
                         data_patch = np.pad(data_patch, [[0, 0], [0, pad_val_1], [0, 0]], 'constant')
 
                     # Run it through model
-                    if self.use_metadata:
-                        center_location = [x0 + patch_size[0] // 2, x1 + patch_size[1] // 2]
-                        channels_metadata = self.get_patch_metadata_channels(ech, center_location, patch_size,
-                                                                             self.meta_channels)
-                        channels_metadata = np.moveaxis(channels_metadata, 0, 2)
-                        if self.fusion == False and self.mixin == False:
-                            pred_patch = _get_patch_prediction(np.concatenate((data_patch, channels_metadata), axis=-1))
-                        else:
-                            if self.mixin:
-                                pred_patch = _get_patch_prediction(data_patch, meta=channels_metadata)
-                            if self.fusion:
-                                pred_patch = _get_patch_prediction(data_patch, meta=channels_metadata,
-                                                                   )
-
-                    else:
-                        pred_patch = _get_patch_prediction(data_patch)
+                    pred_patch = _get_patch_prediction(data_patch)
 
                     # Make output array (We do this here since it will then be agnostic to the number of output channels)
                     if len(predictions) == 0:
@@ -641,7 +343,6 @@ class SegPipe():
                     seg[y:, x, 0] = 1 # Set the probability of having background to 1 below sea floor
                     seg[y:, x, 1] = 0
                     seg[y:, x, 2] = 0
-
             return seg
 
         patch_size = self.window_dim
@@ -663,8 +364,9 @@ class SegPipe():
 
                 # Todo: Label processing should be performed with existing class method instead (verify that it does the same thing).
                 labels = convert_label_indexing(data, labels, ech)[1]
-                labels = refine_label_boundary(frequencies=self.frequencies,
-                                               threshold_freq=self.frequencies[-1])(data, labels, ech)[1]
+                labels = refine_label_boundary(data, labels, ech,
+                                               frequencies=self.frequencies,
+                                               threshold_freq = self.frequencies[-1])[1]
                 labels[labels == -100] = -1
             else:
                 # Set infinite values of data to 0
@@ -680,20 +382,16 @@ class SegPipe():
                 labels = ech.label_numpy()
                 # Todo: Label processing should be performed with existing class method instead (verify that it does the same thing).
                 labels = convert_label_indexing(data, labels, ech)[1]
-                labels = refine_label_boundary(frequencies=self.frequencies,
-                                               threshold_freq=self.frequencies[-1])(np.moveaxis(data, -1, 0), labels, ech)[1]
+                labels = refine_label_boundary(np.moveaxis(data, -1, 0), labels, ech)[1]
                 labels[labels == -100] = -1
 
-            if self.use_metadata == True:
-                data = db_with_limits_scaled(np.moveaxis(data, -1, 0), None, None, None)[0]
-            else:
-                data = db_with_limits(np.moveaxis(data, -1, 0), None, None, None)[0]
+            data = db_with_limits(np.moveaxis(data, -1, 0), None, None, None)[0]
 
         data = np.moveaxis(data, 0, -1)
 
-        if model_train == False:
-            self.load_model_params()
+        self.load_model_params()
 
+        # Get segmentation
         if sandeel_only:
             seg = _segmentation(data, patch_size, patch_overlap)[:, :, 1]
         else:
@@ -868,7 +566,6 @@ class SegPipe():
                         # Numpy save
                         np.save(file_path_pred + 'pred', preds.astype(np.float16))
 
-
     def save_segmentation_predictions_in_zarr(self, selected_surveys=[], resume=False):
         """
         Save segmentation predictions in zarr format
@@ -991,8 +688,7 @@ class SegPipe():
         Similarly to the function 'save_segmentation_predictions_sandeel' there is a loop over surveys
         and different surveys may be considered depending on the chosen partition.
         """
-
-        if self.partition_predict == 'all surveys':
+        if self.partition == 'all surveys':
             if self.data_mode == 'zarr':
                 surveys_list = self.echograms
                 assert len(colors_list) == len(surveys_list)
@@ -1003,7 +699,7 @@ class SegPipe():
                     ["blue", "blue", "blue", "blue", "blue", "blue", "blue", "blue", "blue", "blue", "blue"])
                 )
 
-        if self.partition_predict == 'single survey' or self.partition_predict == 'selected surveys':
+        if self.partition == 'single survey' or self.partition == 'selected surveys':
             assert len(selected_surveys) != 0
             assert len(colors_list) == len(selected_surveys)
             if self.data_mode == 'zarr':
@@ -1019,66 +715,45 @@ class SegPipe():
                 colors_list)
             )
 
-        print(surveys_list, self.partition)
         print('Get metrics')
         print('Evaluation mode: ', self.eval_mode)
         assert self.eval_mode in ['all', 'fish', 'region']
         echograms = self.echograms
 
         # Initialize plot
-        # dpi = 400
-        # mm_to_inch = 1 / 25.4
-        # figsize_x = 170.0
-        # figsize_y = 0.8 * figsize_x
-        # fig_pr = plt.figure(figsize=(mm_to_inch * figsize_x, mm_to_inch * figsize_y), dpi=dpi)
-        # fig_roc = plt.figure(figsize=(mm_to_inch * figsize_x, mm_to_inch * figsize_y), dpi=dpi)
+        dpi = 400
+        mm_to_inch = 1 / 25.4
+        figsize_x = 170.0
+        figsize_y = 0.8 * figsize_x
+        fig_pr = plt.figure(figsize=(mm_to_inch * figsize_x, mm_to_inch * figsize_y), dpi=dpi)
+        fig_roc = plt.figure(figsize=(mm_to_inch * figsize_x, mm_to_inch * figsize_y), dpi=dpi)
 
         # Initialize dataframe
         appended_df = []
 
-        save_path = os.path.join(self.dir_savefig, self.path_model_params.split('/')[-2] + '_best', #self.path_model_params.split('/')[-1].split('.pt')[0],
-                                 self.eval_mode)
-        print(save_path)
-        if not os.path.isdir(save_path):
-            os.makedirs(save_path)
-
         for j, survey in enumerate(surveys_list):
+
             if self.data_mode == 'zarr':
                 print(f'Evaluate metrics on survey: {surveys_list[j].name}')
                 selected_echograms = survey.raw_file_included
             else:
                 print(f'Evaluate metrics on survey: {survey}')
                 selected_echograms = [e for e in echograms if e.year == survey]
-
             preds = []
             labels = []
-            for ii, ech in tqdm(enumerate(selected_echograms)):
-                #print("[Step %d/%d]" % (ii+1, len(selected_echograms)))
-                if self.data_mode == 'zarr':
-                    ech_name = ech.split('.raw')[0]
-                else:
-                    ech_name = ech.name
 
-                if self.dir_save_preds_labels is None:
-                    pred, label = self.predict_echogram(ech, sandeel_only=True)
-                    pred = pred.astype(np.float16)
+            if self.dir_save_preds_labels is None:
+                print(
+                    'Config option --dir_save_preds_label should not be None, i.e. provide a path to the directory for saving predictions and labels')
+                continue
+            else:
+                for ii, ech in enumerate(selected_echograms):
+                    print("[Step %d/%d]" % (ii+1, len(selected_echograms)))
+                    if self.data_mode == 'zarr':
+                        ech_name = ech.split('.raw')[0]
+                    else:
+                        ech_name = ech.name
 
-                    if self.eval_mode == 'region':
-                        extend_size = 20
-                        # Get evaluation mask, i.e. the pixels to be evaluated
-                        if self.data_mode == 'zarr':
-                            eval_mask = self.get_extended_label_mask_for_echogram(ech, extend_size,
-                                                                                  raw_file=ech_name)
-                        else:
-                            eval_mask = self.get_extended_label_mask_for_echogram(ech, extend_size)
-                        # Set labels to -1 if not included in evaluation mask
-                        label[eval_mask != True] = -1
-
-                    # 'Fish' evaluation mode: Set all background pixels to 'ignore', i.e. only evaluate the discrimination on species
-                    if self.eval_mode == 'fish':
-                        label[label == 0] = -1
-
-                else:
                     if self.eval_mode == 'all':
                         file_path_label = self.dir_save_preds_labels + 'relabel_morph_close/' + '{0}/'.format(
                             ech_name) + 'label.npy'
@@ -1096,127 +771,111 @@ class SegPipe():
 
                     pred = np.load(file_path_pred)
                     label = np.load(file_path_label)
+                    preds += [pred.ravel()]
+                    labels += [label.ravel()]
 
-                preds += [pred.ravel()]
-                labels += [label.ravel()]
+                print('Started preparing arrays of combined predictions and labels for evaluation')
+                preds = np.hstack(preds)
+                labels = np.hstack(labels)
+                print('Finished preparing arrays, start computing metrics')
 
-            print('Started preparing arrays of combined predictions and labels for evaluation')
-            preds = np.hstack(preds).astype(np.float16)
-            labels = np.hstack(labels).astype(np.int8)
-            print('Finished preparing arrays, start computing metrics')
+                # Precision, recall, F1
+                start = time.time()
+                precision, recall, thresholds = precision_recall_curve(labels[np.where(labels != -1)],
+                                                                       preds[np.where(labels != -1)],
+                                                                       pos_label=1)
+                F1 = 2 * (precision * recall) / (precision + recall)
+                F1[np.invert(np.isfinite(F1))] = 0
+                print(f"Computed pr, F1 in (min): {np.round((time.time() - start) / 60, 2)}")
 
-            # Precision, recall, F1
-            start = time.time()
-            precision, recall, thresholds = precision_recall_curve(labels[np.where(labels != -1)],
-                                                                   preds[np.where(labels != -1)],
-                                                                   pos_label=1)
+                # ROC, AUC
+                start = time.time()
+                fpr, tpr, _ = roc_curve(labels[np.where(labels != -1)],
+                                        preds[np.where(labels != -1)],
+                                        pos_label=1)
+                AUC = auc(x=fpr, y=tpr)
+                print(f"Computed roc, AUC in (min): {np.round((time.time() - start) / 60, 2)}")
 
-            # save precision, recall to csv file
-            data_df = pd.DataFrame({'recall': recall, 'precision': precision})
-            data_df.to_csv(os.path.join(save_path, str(survey) + '.csv'))
+                print(survey, 'F1: {:.3f}, AUC:{:.3f}, Precision: {:.3f}, Recall: {:.3f}, Threshold: {:.3f}'.format(
+                    F1[np.argmax(F1)],
+                    AUC,
+                    precision[np.argmax(F1)],
+                    recall[np.argmax(F1)],
+                    thresholds[np.argmax(F1)]
+                )
+                      )
 
-            #
-            # F1 = 2 * (precision * recall) / (precision + recall)
-            # F1[np.invert(np.isfinite(F1))] = 0
-            # print(f"Computed pr, F1 in (min): {np.round((time.time() - start) / 60, 2)}")
-            #
-            # # ROC, AUC
-            # start = time.time()
-            # fpr, tpr, _ = roc_curve(labels[np.where(labels != -1)],
-            #                         preds[np.where(labels != -1)],
-            #                         pos_label=1)
-            # AUC = auc(x=fpr, y=tpr)
-            # print(f"Computed roc, AUC in (min): {np.round((time.time() - start) / 60, 2)}")
-            #
-            # print(survey, 'F1: {:.3f}, AUC:{:.3f}, Precision: {:.3f}, Recall: {:.3f}, Threshold: {:.3f}'.format(
-            #     F1[np.argmax(F1)],
-            #     AUC,
-            #     precision[np.argmax(F1)],
-            #     recall[np.argmax(F1)],
-            #     thresholds[np.argmax(F1)]
-            # )
-            #       )
-            #
-            # # Write metrics to pandas df
-            # df = pd.DataFrame({'Survey': [survey],
-            #                    'Model': [self.model_name],
-            #                    'AUC': [AUC],
-            #                    'F1': [F1[np.argmax(F1)]],
-            #                    'Precision': [precision[np.argmax(F1)]],
-            #                    'Recall': [recall[np.argmax(F1)]],
-            #                    'Threshold': [thresholds[np.argmax(F1)]],
-            #                    }
-            #                   )
-            #
-            # appended_df.append(df)
+                # Write metrics to pandas df
+                df = pd.DataFrame({'Survey': [survey],
+                                   'Model': [self.model_name],
+                                   'AUC': [AUC],
+                                   'F1': [F1[np.argmax(F1)]],
+                                   'Precision': [precision[np.argmax(F1)]],
+                                   'Recall': [recall[np.argmax(F1)]],
+                                   'Threshold': [thresholds[np.argmax(F1)]],
+                                   }
+                                  )
 
-            # Plot
-            # ticks = [0, 0.2, 0.4, 0.6, 0.8, 1.0]
-            # ticks_empty = [''] * len(ticks)
+                appended_df.append(df)
 
+                # Plot
+                ticks = [0, 0.2, 0.4, 0.6, 0.8, 1.0]
+                ticks_empty = [''] * len(ticks)
+                ax_pr = fig_pr.add_subplot(3, 4, 1 + j, xlim=(0, 1), ylim=(0, 1))
+                ax_pr.set_title(survey, fontsize=8)  # , pad=5)
+                ax_roc = fig_roc.add_subplot(3, 4, 1 + j, xlim=(0, 1), ylim=(0, 1))
+                ax_roc.set_title(survey, fontsize=8)  # , pad=5)
+                if j % 4 == 0:
+                    ax_pr.set_ylabel("Precision", fontsize=8)  # , labelpad=-25)
+                    ax_pr.set_yticks(ticks)
+                    ax_roc.set_ylabel("True positive rate", fontsize=8)  # , labelpad=-25)
+                    ax_roc.set_yticks(ticks)
+                else:
+                    ax_pr.set_yticklabels(ticks_empty)
+                    ax_roc.set_yticklabels(ticks_empty)
+                if 1 + j > 8:
+                    ax_pr.set_xlabel("Recall", fontsize=8)  # , labelpad=-20)
+                    ax_pr.set_xticks(ticks)
+                    ax_roc.set_xlabel("False positive rate", fontsize=8)  # , labelpad=-20)
+                    ax_roc.set_xticks(ticks)
+                else:
+                    ax_pr.set_xticklabels(ticks_empty)
+                    ax_roc.set_xticklabels(ticks_empty)
+                ax_pr.tick_params(labelsize=6)
+                ax_pr.scatter(recall, precision, s=2, c=color_survey[survey])
+                ax_pr.set_xlim(-0.06, 1.06)
+                ax_pr.set_ylim(-0.06, 1.06)
+                ax_roc.set_xlim(-0.06, 1.06)
+                ax_roc.set_ylim(-0.06, 1.06)
+                ax_roc.tick_params(labelsize=6)
+                ax_roc.scatter(fpr, tpr, s=2, c=color_survey[survey])
 
-            #
-            # ax_pr = fig_pr.add_subplot(3, 4, 1 + j, xlim=(0, 1), ylim=(0, 1))
-            # ax_pr.set_title(survey, fontsize=8)  # , pad=5)
-            # ax_roc = fig_roc.add_subplot(3, 4, 1 + j, xlim=(0, 1), ylim=(0, 1))
-            # ax_roc.set_title(survey, fontsize=8)  # , pad=5)
-            # if j % 4 == 0:
-            #     ax_pr.set_ylabel("Precision", fontsize=8)  # , labelpad=-25)
-            #     ax_pr.set_yticks(ticks)
-            #     ax_roc.set_ylabel("True positive rate", fontsize=8)  # , labelpad=-25)
-            #     ax_roc.set_yticks(ticks)
-            # else:
-            #     ax_pr.set_yticks(ticks)
-            #     ax_pr.set_yticklabels(ticks_empty)
-            #     ax_roc.set_yticks(ticks)
-            #     ax_roc.set_yticklabels(ticks_empty)
-            # if 1 + j > 8:
-            #     ax_pr.set_xlabel("Recall", fontsize=8)  # , labelpad=-20)
-            #     ax_pr.set_xticks(ticks)
-            #     ax_roc.set_xlabel("False positive rate", fontsize=8)  # , labelpad=-20)
-            #     ax_roc.set_xticks(ticks)
-            # else:
-            #     ax_pr.set_xticks(ticks)
-            #     ax_roc.set_xticks(ticks)
-            #     ax_pr.set_xticklabels(ticks_empty)
-            #     ax_roc.set_xticklabels(ticks_empty)
-            # ax_pr.tick_params(labelsize=6)
-            # print('Adding figure data')
-            # ax_pr.scatter(recall, precision, s=2, c=color_survey[survey])
-            # ax_pr.set_xlim(-0.06, 1.06)
-            # ax_pr.set_ylim(-0.06, 1.06)
-            # ax_roc.set_xlim(-0.06, 1.06)
-            # ax_roc.set_ylim(-0.06, 1.06)
-            # ax_roc.tick_params(labelsize=6)
-            # ax_roc.scatter(fpr, tpr, s=2, c=color_survey[survey])
-            # print('Finished adding figure data')
-            #
-            # # Save and show figures
-            # fig_pr.tight_layout()
-            # # fig_roc.tight_layout()
-            # if self.dir_savefig is not None:
-            #     name_savefig = self.dir_savefig + 'pr_' + self.eval_mode + '_' + \
-            #                    self.path_model_params.split('/')[-1].split('.pt')[0]
-            #     name_savefig_roc = self.dir_savefig + 'roc_' + self.eval_mode + '_' + \
-            #                        self.path_model_params.split('/')[-1].split('.pt')[0]
-            #     fig_pr.savefig(fname=name_savefig + '.png', dpi=dpi)
-            #     fig_roc.savefig(fname=name_savefig_roc + '.png', dpi=dpi)
-            #     with open(name_savefig + '.pkl', "wb") as file:
-            #         pickle.dump(fig_pr, file)
-            #     with open(name_savefig_roc + '.pkl', "wb") as file:
-            #         pickle.dump(fig_roc, file)
-            #
-            #     plt.show(block=False)
-            #
-            #     # Save dataframe
-            #     pd.concat(appended_df).to_csv(self.dir_savefig + 'metrics_' + self.eval_mode + '_' + \
-            #                                   self.path_model_params.split('/')[-1].split('.pt')[0] + \
-            #                                   '.csv', index=False
-            #                                   )
-            # else:
-            #     print(
-            #         'Config option --dir_savefig should not be None if you want to see the results, i.e. provide a path to the directory for saving the evaluation results')
-            #     continue
+                # Save and show figures
+                fig_pr.tight_layout()
+                fig_roc.tight_layout()
+                if self.dir_savefig is not None:
+                    name_savefig = self.dir_savefig + 'pr_' + self.eval_mode + '_' + \
+                                   self.path_model_params.split('/')[-1].split('.pt')[0]
+                    name_savefig_roc = self.dir_savefig + 'roc_' + self.eval_mode + '_' + \
+                                       self.path_model_params.split('/')[-1].split('.pt')[0]
+                    fig_pr.savefig(fname=name_savefig + '.png', dpi=dpi)
+                    fig_roc.savefig(fname=name_savefig_roc + '.png', dpi=dpi)
+                    with open(name_savefig + '.pkl', "wb") as file:
+                        pickle.dump(fig_pr, file)
+                    with open(name_savefig_roc + '.pkl', "wb") as file:
+                        pickle.dump(fig_roc, file)
+
+                    plt.show(block=False)
+
+                    # Save dataframe
+                    pd.concat(appended_df).to_csv(self.dir_savefig + 'metrics_' + self.eval_mode + '_' + \
+                                                  self.path_model_params.split('/')[-1].split('.pt')[0] + \
+                                                  '.csv', index=False
+                                                  )
+                else:
+                    print(
+                        'Config option --dir_savefig should not be None if you want to see the results, i.e. provide a path to the directory for saving the evaluation results')
+                    continue
 
 
 class SegPipeUNet(SegPipe):
@@ -1227,103 +886,8 @@ class SegPipeUNet(SegPipe):
     """
     def __init__(self, opt):
         super().__init__(opt=opt)
-        self.opt = opt
-        if (opt.fusion == False) and (opt.mixin == False):
-            self.model = models.UNet_NoMet(n_classes=3, in_channels=len(self.frequencies) + get_in_channels(opt.meta_channels), fusion_input=False,
-                                           fusion=False, mixin=False,
-                                           depth=5, start_filts=64, up_mode='transpose',
-                                           merge_mode='concat')
-        elif opt.fusion == True:
-            assert opt.mixin == False, \
-                "Parameter mixin should be set to False as fusion is selected"
-            if opt.use_pretrained == False:
-                self.model = models.UNet_Met_Fusion(n_classes=3, in_channels=4, fusion_input=opt.fusion_input,
-                                             meta_in_channels=get_in_channels(opt.meta_channels),
-                                             fusion=True, mixin=False,
-                                             depth=5, start_filts=64, up_mode='transpose',
-                                             merge_mode='concat')
-            else:
-                self.model = models.UNet_preTrained_Met_Fusion(
-                    path_to_baseline_model=path_to_baseline_model(),
-                    n_classes=3, in_channels=4, meta_in_channels=get_in_channels(opt.meta_channels),
-                    fusion_input=opt.fusion_input,
-                    fusion=True, mixin=False, depth=5, start_filts=64, up_mode='transpose',
-                    merge_mode='concat')
-
-                self.model.model_pretrained = nn.Identity()
-
-        elif opt.mixin == True:
-            assert self.fusion == False, \
-                "Parameter fusion should be set to False as mixin is selected"
-            if opt.use_pretrained == False:
-                if opt.archi_type == 1:
-                    self.model = models.UNet_Met_Mixin_Architect1(n_classes=3, in_channels=4,
-                                             meta_in_channels=get_in_channels(opt.meta_channels), fusion_input=False,
-                                             fusion=False, mixin=True,
-                                             depth=5, start_filts=64, up_mode='transpose',
-                                             merge_mode='concat')
-                elif opt.archi_type == 2:
-                    self.model = models.UNet_Met_Mixin_Architect2(n_classes=3, in_channels=4,
-                                                                  meta_in_channels=get_in_channels(opt.meta_channels),
-                                                                  fusion_input=False,
-                                                                  fusion=True, mixin=False,
-                                                                  depth=5, start_filts=64, up_mode='transpose',
-                                                                  merge_mode='concat')
-                else:
-                    assert opt.archi_type in [1, 2], \
-                        "Parameter archi_type should be set to 1 or 2"
-
-
-            else:
-                if opt.archi_type == 1:
-                    self.model = models.UNet_preTrained_Met_Mixin_Architect1(
-                        path_to_baseline_model=path_to_baseline_model(),
-                        n_classes=3, in_channels=4, meta_in_channels=get_in_channels(opt.meta_channels),
-                        fusion_input=False,
-                        fusion=False, mixin=True, depth=5, start_filts=64, up_mode='transpose',
-                        merge_mode='concat')
-
-                    self.model.model_pretrained = nn.Identity()
-
-                elif opt.archi_type == 2:
-                    self.model = models.UNet_preTrained_Met_Mixin_Architect2(path_to_baseline_model=path_to_baseline_model(),
-                                                                  n_classes=3, in_channels=4,
-                                                                  meta_in_channels=get_in_channels(opt.meta_channels),
-                                                                  fusion_input=False,
-                                                                  fusion=True, mixin=False,
-                                                                  depth=5, start_filts=64, up_mode='transpose',
-                                                                  merge_mode='concat')
-                    self.model.model_pretrained = nn.Identity()
-                elif opt.archi_type == 3:
-                    self.model = models.UNet_preTrained_Met_Mixin_Architect3(path_to_baseline_model=path_to_baseline_model(),
-                                                                        n_classes=3, in_channels=4,
-                                                                        meta_in_channels=get_in_channels(opt.meta_channels),
-                                                                        fusion_input=False,
-                                                                        fusion=True, mixin=False,
-                                                                        depth=5, start_filts=64, up_mode='transpose',
-                                                                        merge_mode='concat')
-                    self.model.model_pretrained = nn.Identity()
-                else:
-                    assert opt.archi_type in [1, 2, 3], \
-                        "Parameter archi_type should be set to 1 or 2"
-
-        if opt.freeze:
-            if opt.level_freeze == 1:
-                for param in self.model.down_convs.parameters():
-                    param.requires_grad = False
-#
-            elif opt.level_freeze == 2:
-                for param in self.model.down_convs.parameters():
-                    param.requires_grad = False
-                for param in self.model.up_convs.parameters():
-                    param.requires_grad = False
-            else:
-                assert 1==2, \
-                    "Parameter level_freeze must be equal to 1 (only freeze down_convs) OR 2(freeze down_convs and up_convs)"
-
-                    #for name, param in self.model.down_convs.named_parameters():
-                    #    if name == '0.main.0.weight':
-                    #        print(name, param)
+        self.model = models.UNet(n_classes=3, in_channels=4, depth=5, start_filts=64, up_mode='transpose',
+                                 merge_mode='concat')
 
     def define_data_loaders(self, samplers_train, samplers_test, sampler_probs):
         """
@@ -1338,58 +902,39 @@ class SegPipeUNet(SegPipe):
         # samplers_train, samplers_test, sampler_probs = self.sample_data()
 
         dataset_train = Dataset(
-            samplers=samplers_train,
-            window_size=self.window_size,
-            frequencies=self.frequencies,
-            n_samples=self.opt.batch_size * self.opt.iterations,
-            sampler_probs=sampler_probs,
+            samplers_train,
+            self.window_size,
+            self.frequencies,
+            opt.batch_size * opt.iterations,
+            sampler_probs,
             augmentation_function=data_augmentation,
             label_transform_function=label_transform,
             data_transform_function=data_transform)
 
         dataset_test = Dataset(
-            samplers=samplers_test,
-            window_size=self.window_size,
-            frequencies=self.frequencies,
-            n_samples=self.opt.batch_size * self.opt.test_iter,
-            sampler_probs=sampler_probs,
+            samplers_test,
+            self.window_size,
+            self.frequencies,
+            opt.batch_size * opt.test_iter,
+            sampler_probs,
             augmentation_function=None,
             label_transform_function=label_transform,
             data_transform_function=data_transform)
 
-        def _seed_worker(worker_id):
-            worker_seed = torch.initial_seed() % 2 ** 32
-            np.random.seed(worker_seed)
-            random.seed(worker_seed)
-
         dataloader_train = DataLoader(dataset_train,
-                                      batch_size=self.opt.batch_size,
+                                      batch_size=opt.batch_size,
                                       shuffle=False,
-                                      num_workers=self.opt.num_workers,
-                                      worker_init_fn=_seed_worker)
+                                      num_workers=opt.num_workers,
+                                      worker_init_fn=np.random.seed)
 
         dataloader_test = DataLoader(dataset_test,
-                                     batch_size=self.opt.batch_size,
+                                     batch_size=opt.batch_size,
                                      shuffle=False,
-                                     num_workers=self.opt.num_workers,
-                                     worker_init_fn=_seed_worker)
+                                     num_workers=opt.num_workers,
+                                     worker_init_fn=np.random.seed)
 
         return dataloader_train, dataloader_test
 
-
-def get_in_channels(meta_channels):
-    if len(meta_channels) != 0:
-        weights = {
-            'portion_year': 1,
-            'portion_day': 2,
-            'depth_rel': 1,
-            'depth_abs_surface': 1,
-            'depth_abs_seabed': 1,
-            'time_diff': 1
-        }
-        return np.sum([meta_channels[kw] * weights[kw] for kw in weights.keys()])
-    else:
-        return 0
 
 class DataMemm():
     """ Object to represent memmap data features for the training-prediction pipeline """
@@ -1407,10 +952,6 @@ class DataMemm():
         self.echograms = get_data_readers(frequencies=self.frequencies, minimum_shape=self.window_dim,
                                           mode=opt.data_mode)
 
-        self.train_surveys = opt.train_surveys
-        self.val_surveys = opt.val_surveys
-
-    # Partition data into train, test, val
     # Partition data into train, test, val
     def partition_data(self, echograms, partition='random', portion_train=0.85):
         """
@@ -1419,6 +960,7 @@ class DataMemm():
         :partition: The different options are: 'random' OR 'year' OR 'single year' OR 'all years'
         :param portion_train: portion of training in the train-test split
         :return echograms used in the training and validation sets during training.
+
         Regarding the partition options:
         - 'random': random train-test split
         - 'selected surveys': uses specific training years (see Olav's paper) and specific validation year
@@ -1426,9 +968,6 @@ class DataMemm():
         - 'all surveys': uses all available data for training and specific validation year
         The hard-coding in these options (excluding 'random') may be reviewed.
         """
-
-        assert partition in ['random', 'selected surveys', 'single survey', 'all surveys'], \
-                "Parameter 'partition' must equal 'random' or 'selected surveys' or 'single survey' or 'all surveys'"
 
         if partition == 'random':
             # Random partition of all echograms
@@ -1442,15 +981,12 @@ class DataMemm():
             # Reset random seed to generate random crops during training
             np.random.seed(seed=None)
 
-        elif partition == 'selected surveys' or partition == 'single survey':
-            ## Partition by year of echogram
+        elif partition == 'selected surveys':
+            # Partition by year of echogram
             train = list(filter(lambda x: any(
                 [year in x.name for year in
-                 ['D'+str(s) for s in self.train_surveys]]), echograms))
-            #train = list(filter(lambda x: any(
-            #    [year in x.name for year in
-            #     ['D2011', 'D2012', 'D2013', 'D2014', 'D2015', 'D2016']]), echograms))
-            test = list(filter(lambda x: any([year in x.name for year in ['D'+str(s) for s in self.val_surveys]]), echograms))
+                 ['D2011', 'D2012', 'D2013', 'D2014', 'D2015', 'D2016']]), echograms))
+            test = list(filter(lambda x: any([year in x.name for year in ['D2017']]), echograms))
 
         elif partition == 'all surveys':
             # Partition by year of echogram
@@ -1460,6 +996,16 @@ class DataMemm():
                   'D2011', 'D2012', 'D2013', 'D2014', 'D2015', 'D2016',
                   'D2017', 'D2018']]), echograms))
             test = list(filter(lambda x: any([year in x.name for year in ['D2017']]), echograms))
+
+        elif partition == 'single survey':
+            # Partition by year of echogram
+            train = list(filter(lambda x: any(
+                [year in x.name for year in
+                 ['D2017']]), echograms))
+            test = list(filter(lambda x: any([year in x.name for year in ['D2017']]), echograms))
+
+        else:
+            print("Parameter 'partition' must equal 'random' or 'selected surveys' or 'single survey' or 'all surveys'")
 
         print('Train:', len(train), ' Test:', len(test))
 
@@ -1477,7 +1023,6 @@ class DataMemm():
 
         samplers_train = [
             Background(echograms_train, self.window_size),
-           # HighIntensityBackground(echograms_train, self.window_size),
             Seabed(echograms_train, self.window_size),
             School(echograms_train, 27),
             School(echograms_train, 1),
@@ -1487,7 +1032,6 @@ class DataMemm():
 
         samplers_test = [
             Background(echograms_test, self.window_size),
-          #  HighIntensityBackground(echograms_test, self.window_size),
             Seabed(echograms_test, self.window_size),
             School(echograms_test, 27),
             School(echograms_test, 1),
@@ -1579,55 +1123,8 @@ class DataZarr():
 
         return samplers_train, samplers_test, sampler_probs
 
-
 class Config_Options(object):
     """ Object to represent configuration options for the training-prediction pipeline """
     def __init__(self, configuration):
         for k, v in configuration.items():
             setattr(self, k, v)
-
-
-if __name__ == '__main__':
-    echograms = get_data_readers(mode='memm')
-    window_dim = 256
-    window_size = (window_dim, window_dim)
-
-    samplers_test = [
-        Background(echograms, window_size),
-        Seabed(echograms, window_size),
-        School(echograms, 27),
-        School(echograms, 1),
-        SchoolSeabed(echograms, window_dim // 2, 27),
-        SchoolSeabed(echograms, window_dim // 2, 1)
-    ]
-
-    coord, ech = np.random.choice(samplers_test).get_sample()
-    print(ech.name)
-    #2011206-D20110430-T161023
-ain, samplers_test, sampler_probs
-
-
-class Config_Options(object):
-    """ Object to represent configuration options for the training-prediction pipeline """
-    def __init__(self, configuration):
-        for k, v in configuration.items():
-            setattr(self, k, v)
-
-
-if __name__ == '__main__':
-    echograms = get_data_readers(mode='memm')
-    window_dim = 256
-    window_size = (window_dim, window_dim)
-
-    samplers_test = [
-        Background(echograms, window_size),
-        Seabed(echograms, window_size),
-        School(echograms, 27),
-        School(echograms, 1),
-        SchoolSeabed(echograms, window_dim // 2, 27),
-        SchoolSeabed(echograms, window_dim // 2, 1)
-    ]
-
-    coord, ech = np.random.choice(samplers_test).get_sample()
-    print(ech.name)
-    #2011206-D20110430-T161023

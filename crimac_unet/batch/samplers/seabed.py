@@ -76,5 +76,4 @@ class SeabedZarr():
         if y > labels.shape[1] - self.window_size[0] // 2:
             y = labels.shape[1] - self.window_size[0] // 2
 
-
         return [x, y], zarr_rand

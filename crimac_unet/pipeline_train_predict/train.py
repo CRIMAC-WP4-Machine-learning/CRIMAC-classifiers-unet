@@ -20,29 +20,18 @@ import time
 import numpy as np
 from pipeline_train_predict.pipeline import Config_Options, DataMemm, DataZarr, SegPipeUNet
 from paths import *
-import neptune.new as neptune
 
-# Ensure pytorch gpu order equals nvidia-smi order
-os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
 
 if __name__ == '__main__':
 
     # Configuration options
     configuration = pipeline_config()
     opt = Config_Options(configuration)
-    print(opt.mixin_intermediate)
 
     if opt.data_mode == 'zarr':
         data_obj = DataZarr(opt)
     elif opt.data_mode == 'memm':
         data_obj = DataMemm(opt)
-
-    # init Neptune run
-    run = neptune.init(project='ingridut/COGMAR', mode='offline')
-    # Add parameters
-    run["configuration"] = {k: v for k, v in configuration.items()}
-    run["path_to_trained_model"] = path_to_trained_model()
-
 
     print("Preparing data samplers")
     start = time.time()
