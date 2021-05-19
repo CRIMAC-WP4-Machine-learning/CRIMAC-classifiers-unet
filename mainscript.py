@@ -4,25 +4,24 @@ import torch
 import numpy as np
 import random
 import time
+import os
 from pipeline_train_predict.pipeline import Config_Options, SegPipeUNet, pipeline_config
 from data.echogram import get_data_readers
 from paths import *
-
-import pdb
 
 np.random.seed(5)
 random.seed(5)
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 path_model_params = '/model/paper_v2_heave_2.pt'
-ncfile = '/datawork/'
 
 # Run the predictions
 
 # Configuration options dictionary
 configuration = pipeline_config()
 # Set specific parameters for this case
-configuration['selected_surveys'] = ['S2018823']
+configuration['selected_surveys'] = [os.getenv('OUTPUT_NAME', 'out')]
 configuration['labels_available'] = False
+configuration['dev'] = 0
 # Create options instance
 opt = Config_Options(configuration)
 

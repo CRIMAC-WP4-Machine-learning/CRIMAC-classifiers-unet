@@ -1,0 +1,12 @@
+dask>=2021.2.0
+matplotlib>=3.2.2
+numcodecs>=0.7.3
+numpy>=1.19.2
+PyYAML>=5.4.1
+scikit-learn>=0.24.1
+scipy>=1.5.0
+torch>=1.8.0
+xarray>=0.17.0
+zarr>=2.6.1
+pandas>=1.2.4
+pyarrow>=3.0.0
