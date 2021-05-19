@@ -3,7 +3,7 @@ FROM pytorch/pytorch:latest
 ARG ssh_prv_key
 ARG ssh_pub_key
 
-COPY requirements.txt /tmp/
+COPY requirements.min.txt /tmp/
 
 # From https://stackoverflow.com/a/42125241
 # Authorize SSH Host
@@ -28,7 +28,7 @@ RUN git clone git@github.com:COGMAR/Acoustic-CRIMAC.git /tmp/unet && \
     mv src-cogmar /crimac_unet && \
     cd /crimac_unet && \
     pip install --upgrade pip && \
-    pip install -r /tmp/requirements.txt && \
+    pip install -r /tmp/requirements.min.txt && \
     apt-get remove -y \
         git \
         openssh-server && \
