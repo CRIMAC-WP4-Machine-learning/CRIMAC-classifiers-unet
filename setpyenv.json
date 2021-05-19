@@ -1,6 +1,6 @@
 {
     "scratch": "/datain/",
-    "syspath": "/acoustic_private/",
+    "syspath": "/crimac_unet/",
     "path_to_echograms": "/datain/",
     "path_to_korona_data": "/datain/",
     "path_to_korona_transducer_depths": "/datain/",
