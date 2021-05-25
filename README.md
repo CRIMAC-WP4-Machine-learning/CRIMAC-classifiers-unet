@@ -46,7 +46,7 @@ This repository contains scripts for:
     * 'eval_mode' can be 'all' (Consider all pixels), 'region' (Exclude all pixels not in a neighborhood of a labeled School) or 'fish' (only evaluate the discrimination on species). Note that the saved labels will look different depending on the chosen configuration parameter 'eval_mode'.
     * 'resume_writing': if set to True it is assumed that a zarr directory of predictions exists and if new raw files are detected, predictions will be appended to the zarr directory
 
-2. Run the following program: `/pipeline_train_predict/predict.py`
+2. Run the following program: `/pipeline_train_predict/save_predict.py`
 3. The program will then make predictions with the trained model and save the predictions (and labels) to disk (possibility to use path_for_saving_preds_labels indicated in `setpyenv.json`)
 
 ## Make predictions with a trained model without saving the results
@@ -57,7 +57,7 @@ This repository contains scripts for:
     * 'selected_surveys' should be a list of the names of the selected surveys. Should not be an empty list if the previous parameter ('partition_predict') is 'selected surveys' OR 'single survey'.
     * 'labels_available' can be set to True if the labels are wished to be visualized with the predictions
   
-2. Run the following program: `/pipeline_train_predict/save_predict.py`
+2. Run the following program: `/pipeline_train_predict/predict.py`
 3. The program will then make predictions with the trained model and visualize the output (without saving the predictions),
 together with a couple of data frequency channels.
  
