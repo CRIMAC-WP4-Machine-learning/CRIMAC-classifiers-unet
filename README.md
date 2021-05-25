@@ -68,8 +68,6 @@ together with a couple of data frequency channels.
     * 'selected_surveys' should be a list of the names of the selected surveys. Should not be an empty list if the previous parameter ('partition_predict') is 'selected surveys' OR 'single survey'.
     Should be an empty list if 'partition_predict' is set to 'all surveys'
     * 'color_list' should be a list of color strings that will be used for the precision-recall curves. Cannot be empty if 'zarr' format is selected
-    * 'dir_save_preds_labels': should not be None as it is assumed that the predictions and labels are saved before hand to disk for evaluating the quality of the results.
-    * 'dir_savefig': should not be None if you wish to visualize the results after the program execution.
     * 'eval_mode' can be 'all' (Consider all pixels), 'region' (Exclude all pixels not in a neighborhood of a labeled School) or 'fish' (only evaluate the discrimination on species)
 
 2. Run the following program: `/pipeline_train_predict/evaluate.py`
