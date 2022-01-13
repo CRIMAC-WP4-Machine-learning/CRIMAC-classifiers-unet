@@ -514,9 +514,7 @@ class DataReaderZarr():
         data = self.ds.sv.loc[frequencies][:, x0:x1, :]
 
         # drop nans at the bottom of rawfile
-
         if drop_na:
-            data = data.dropna(dim='ping_time')
             data = data.dropna(dim='range')
 
         return data
@@ -969,7 +967,6 @@ class DataReaderZarr():
 
 
 def get_zarr_files(frequencies=[18, 38, 120, 200], minimum_shape=256):
-
     path_to_zarr_files = paths.path_to_zarr_files()
     zarr_files = sorted([z_file for z_file in os.listdir((path_to_zarr_files)) \
                          if '_obj' not in z_file and '.zarr' in z_file])

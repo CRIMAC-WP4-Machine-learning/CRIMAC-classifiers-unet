@@ -4,6 +4,8 @@
 data_mode: 'zarr'
 # Frequency unit (Options: Hz or KHz)
 unit_frequency: 'Hz'
+# Frequencies used for training and predictions
+frequencies: [18, 200]
 # Cuda device id (default: 0) if not available cpu is used
 dev: 3
 # Number of data loading workers (default: 10)
@@ -38,12 +40,12 @@ eval_mode: 'all'
 # Partitioning of the data for the inference (Options: selected surveys, single survey, all surveys - default: 'all surveys')
 partition_predict: 'selected surveys'
 # List with the names of the selected survey
-selected_surveys: ['S2017843D20170513', 'S2017843D20170513T081028']
+selected_surveys: ['S2019847']
 # List with strings referring to colors
 colors_list: []
 # Whether to save the labels
 save_labels: False
 # Whether the labels are available
-labels_available: True
+labels_available: False
 # Whether to resume writing zarr predictions for a survey
 resume_writing: False

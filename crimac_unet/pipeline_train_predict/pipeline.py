@@ -61,11 +61,12 @@ class SegPipe():
         self.model = None
         self.model_is_loaded = False
         self.unit_frequency = opt.unit_frequency
-        if self.unit_frequency == 'kHz':
+        self.frequencies = opt.frequencies
+        if self.frequencies == 'all':
             self.frequencies = [18, 38, 120, 200]
-        elif self.unit_frequency == 'Hz':
-            self.frequencies = [18000, 38000, 120000, 200000]
-        else:
+        if self.unit_frequency == 'Hz':
+            self.frequencies = [freq*1000 for freq in self.frequencies]
+        elif self.unit_frequency != 'kHz':
             print("unit_frequency should be 'Hz' or 'kHz'")
         self.window_dim = opt.window_dim
         self.window_size = [self.window_dim, self.window_dim]
@@ -102,7 +103,7 @@ class SegPipe():
 
     def define_label_transform(self):
         """ Returns label transform functions to be applied when training """
-        label_transform = CombineFunctions([convert_label_indexing, refine_label_boundary])
+        label_transform = CombineFunctions([convert_label_indexing, refine_label_boundary(frequencies=self.frequencies)])
         return label_transform
 
     def load_model_params(self):
@@ -350,6 +351,7 @@ class SegPipe():
 
         if self.data_mode == 'zarr':
             data = ech.get_data_rawfile(raw_file, frequencies=self.frequencies, drop_na=False)
+
             # Swap axis to match memm echogram
             data = np.array(data).swapaxes(1, 2)
 
@@ -364,9 +366,8 @@ class SegPipe():
 
                 # Todo: Label processing should be performed with existing class method instead (verify that it does the same thing).
                 labels = convert_label_indexing(data, labels, ech)[1]
-                labels = refine_label_boundary(data, labels, ech,
-                                               frequencies=self.frequencies,
-                                               threshold_freq = self.frequencies[-1])[1]
+                labels = refine_label_boundary(frequencies=self.frequencies,
+                                               threshold_freq=self.frequencies[-1])(data, labels, ech)[1]
                 labels[labels == -100] = -1
             else:
                 # Set infinite values of data to 0
@@ -382,9 +383,10 @@ class SegPipe():
                 labels = ech.label_numpy()
                 # Todo: Label processing should be performed with existing class method instead (verify that it does the same thing).
                 labels = convert_label_indexing(data, labels, ech)[1]
-                labels = refine_label_boundary(np.moveaxis(data, -1, 0), labels, ech)[1]
+                labels = refine_label_boundary(frequencies=self.frequencies,
+                                               threshold_freq=self.frequencies[-1])(np.moveaxis(data, -1, 0), labels,
+                                                                                    ech)[1]
                 labels[labels == -100] = -1
-
             data = db_with_limits(np.moveaxis(data, -1, 0), None, None, None)[0]
 
         data = np.moveaxis(data, 0, -1)
@@ -667,6 +669,9 @@ class SegPipe():
                     ds = _create_ds_predictions(survey, preds, ech_name)
 
                     if ds is not None:
+                        # Re-chunk so that we have a full range in a chunk (zarr only)
+                        ds = ds.chunk({"range": ds.range.shape[0], "ping_time": 'auto'})
+
                         compressor = Blosc(cname='zstd', clevel=3, shuffle=Blosc.BITSHUFFLE)
                         encoding = {var: {"compressor": compressor} for var in ds.data_vars}
                         if write_first_loop == False:
@@ -886,7 +891,7 @@ class SegPipeUNet(SegPipe):
     """
     def __init__(self, opt):
         super().__init__(opt=opt)
-        self.model = models.UNet(n_classes=3, in_channels=4, depth=5, start_filts=64, up_mode='transpose',
+        self.model = models.UNet(n_classes=3, in_channels=len(self.frequencies), depth=5, start_filts=64, up_mode='transpose',
                                  merge_mode='concat')
 
     def define_data_loaders(self, samplers_train, samplers_test, sampler_probs):
@@ -905,7 +910,7 @@ class SegPipeUNet(SegPipe):
             samplers_train,
             self.window_size,
             self.frequencies,
-            opt.batch_size * opt.iterations,
+            self.opt.batch_size * self.opt.iterations,
             sampler_probs,
             augmentation_function=data_augmentation,
             label_transform_function=label_transform,
@@ -915,22 +920,22 @@ class SegPipeUNet(SegPipe):
             samplers_test,
             self.window_size,
             self.frequencies,
-            opt.batch_size * opt.test_iter,
+            self.opt.batch_size * self.opt.test_iter,
             sampler_probs,
             augmentation_function=None,
             label_transform_function=label_transform,
             data_transform_function=data_transform)
 
         dataloader_train = DataLoader(dataset_train,
-                                      batch_size=opt.batch_size,
+                                      batch_size=self.opt.batch_size,
                                       shuffle=False,
-                                      num_workers=opt.num_workers,
+                                      num_workers=self.opt.num_workers,
                                       worker_init_fn=np.random.seed)
 
         dataloader_test = DataLoader(dataset_test,
-                                     batch_size=opt.batch_size,
+                                     batch_size=self.opt.batch_size,
                                      shuffle=False,
-                                     num_workers=opt.num_workers,
+                                     num_workers=self.opt.num_workers,
                                      worker_init_fn=np.random.seed)
 
         return dataloader_train, dataloader_test
