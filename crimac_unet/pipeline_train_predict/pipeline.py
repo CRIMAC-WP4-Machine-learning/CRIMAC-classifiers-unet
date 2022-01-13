@@ -338,6 +338,7 @@ class SegPipe():
             seabed += 10
             assert seabed.shape[0] == seg.shape[1]
             for x, y in enumerate(seabed):
+            
                 if sandeel_only == True:
                     seg[y:, x] = 0
                 else:
@@ -639,6 +640,7 @@ class SegPipe():
 
 
                 target_dname = self.dir_save_preds_labels + surveys_list[j].name + '_pred' + '.zarr'
+                print('Saving predictions to', target_dname)
 
                 if resume != True:
                     # Delete existing zarr dir of predictions

@@ -875,13 +875,16 @@ class DataReaderZarr():
         plt.tight_layout()
         plt.show()
 
-    def get_seabed(self, save_to_file=True):
+    def get_seabed(self, raw_file=None, save_to_file=True):
         """ Return, load or calculate seabed for entire reader"""
         if self.seabed_dataset is not None:
-            return self.seabed_dataset.seabed
+            if raw_file is None:
+                return self.seabed_dataset.seabed
+            else:
+                return self.seabed_dataset.seabed.where(self.seabed_dataset.raw_file == raw_file, drop=True).astype(int).values
         elif os.path.isdir(self.seabed_path):
             self.seabed_dataset = xr.open_zarr(self.seabed_path)
-            return self.seabed_dataset.seabed
+            return self.get_seabed(raw_file)
         else:
             print("Estimate seabed")
             def seabed_gradient(data):
@@ -903,6 +906,8 @@ class DataReaderZarr():
                                   dims=['frequency', 'ping_time'],
                                   coords=[data.frequency,
                                           data.ping_time])  # seabed = np.zeros((data.shape[:2]))  # (freq, ping_time)
+            seabed.coords["raw_file"] = ("ping_time", data.raw_file)
+            
             for i in range(data.shape[0]):
                 seabed_grad = xr.apply_ufunc(seabed_gradient, data[i, :, :], dask='allowed')
                 seabed[i, :] = -a + n + seabed_grad[:, n:].argmax(axis=1)
@@ -944,12 +949,12 @@ class DataReaderZarr():
                     k += c
 
             s = xr.ufuncs.rint(seabed.median(dim='frequency'))
-            self.seabed_dataset = xr.Dataset(data_vars={'seabed': s}, coords={'ping_time': s.ping_time})
+            self.seabed_dataset = xr.Dataset(data_vars={'seabed': s.astype(int)}, coords={'ping_time': s.ping_time})
 
             # save to zarr file
             if save_to_file:
                 self.seabed_dataset.to_zarr(self.seabed_path)
-            return self.seabed_dataset
+            return self.get_seabed(raw_file=raw_file)
 
     # TODO Save to file, not in zarr?
     def _create_label_mask(self, heave=True):
