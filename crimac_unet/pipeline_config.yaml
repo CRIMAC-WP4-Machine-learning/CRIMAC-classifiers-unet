@@ -7,7 +7,7 @@ unit_frequency: 'Hz'
 # Frequencies used for training and predictions
 frequencies: [18, 200]
 # Cuda device id (default: 0) if not available cpu is used
-dev: 3
+dev: 2
 # Number of data loading workers (default: 10)
 num_workers: 10
 # The height / width of the input image patch to network (default: 256)

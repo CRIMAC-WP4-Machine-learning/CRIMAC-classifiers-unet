@@ -375,7 +375,7 @@ class Echogram():
         #     return self._seabed
 
         else:
-
+            print("Estimate seabed")
             def set_non_finite_values_to_zero(input):
                 input[np.invert(np.isfinite(input))] = 0
                 return input
@@ -448,6 +448,10 @@ class DataReaderZarr():
 
         self.path = path
         self.name = os.path.split(path)[-1].split('.')[0]
+
+        # seabed
+        self.seabed_path = self.path.split('.zarr')[0] + '_seabed.zarr'
+        self.seabed_dataset = None
 
         # Coordinates
         self.frequencies = self.ds.frequency
@@ -871,19 +875,15 @@ class DataReaderZarr():
         plt.tight_layout()
         plt.show()
 
-    # TODO add option to save to file, consider memmap to keep separate from raw
-    def get_seabed(self, raw_file=None, save_to_file=False):
-        if self._seabed is not None:
-            if raw_file is None:
-                return self._seabed
-            return self._seabed.where(self.ds.raw_file == raw_file, drop=True)
-
+    def get_seabed(self, save_to_file=True):
+        """ Return, load or calculate seabed for entire reader"""
+        if self.seabed_dataset is not None:
+            return self.seabed_dataset.seabed
+        elif os.path.isdir(self.seabed_path):
+            self.seabed_dataset = xr.open_zarr(self.seabed_path)
+            return self.seabed_dataset.seabed
         else:
-            def set_non_finite_values_to_zero(in_value):
-                # in_value[np.invert(np.isfinite(in_value))] = 0
-                in_value = in_value.where(np.isfinite(in_value), other=0, drop=False)
-                return in_value
-
+            print("Estimate seabed")
             def seabed_gradient(data):
                 gradient_filter_1 = np.array([[1, 2, 1], [0, 0, 0], [-1, -2, -1]])
                 gradient_filter_2 = np.array([[1, 5, 1], [-2, -10, -2], [1, 5, 1]])
@@ -891,51 +891,65 @@ class DataReaderZarr():
                 grad_2 = conv2d(data, gradient_filter_2, mode='same')
                 return np.multiply(np.heaviside(grad_1, 0), grad_2)
 
-            data = set_non_finite_values_to_zero(self.get_data_rawfile(raw_file=raw_file, drop_na=False))
+            data = self.ds.sv.fillna(0)  # fill nans with 0
 
             # Number of pixel rows at top of image (noise) not included when computing the maximal gradient
-            n = 10 + int(0.05 * data.shape[2])
-            # Vertical shift of seabed approximation line (to give a conservative line)
-            a = int(0.004 * data.shape[2])
+            n = 150  # 10*int(0.05*500)
 
-            seabed = np.zeros((data.shape[:2]))  # (freq, ping_time)
+            # Vertical shift of seabed approximation line (to give a conservative line)
+            a = int(0.004 * 500)
+
+            seabed = xr.DataArray(data=np.zeros((data.shape[:2])),
+                                  dims=['frequency', 'ping_time'],
+                                  coords=[data.frequency,
+                                          data.ping_time])  # seabed = np.zeros((data.shape[:2]))  # (freq, ping_time)
             for i in range(data.shape[0]):
-                seabed[i, :] = -a + n + np.argmax(seabed_gradient(data[i, :, :])[:, n:], axis=1)
+                seabed_grad = xr.apply_ufunc(seabed_gradient, data[i, :, :], dask='allowed')
+                seabed[i, :] = -a + n + seabed_grad[:, n:].argmax(axis=1)
 
             # Repair large jumps in seabed altitude
-            repair_threshold = -8
-
             # Set start/stop for repair interval [i_edge:-i_edge] to avoid repair at edge of echogram
             i_edge = 2
 
-            sb_max = np.array(np.max(data[:, :, n:], axis=2).values) # max value in range (freq, ping)
-            sb_max = np.log(1e-10 + sb_max)         # log transform
-            sb_max -= np.mean(sb_max, axis=1)[:,None]     # get mean value for each freq -(freq,)
-            sb_max *= 1 / np.std(sb_max, axis=1)[:,None]
+            # Use rolling mean and rolling std with window of 500 to find jumps in the seabed altitude
+            repair_threshold = 0.75
+            window_size = 500
+            sb_max = seabed - seabed.rolling(ping_time=window_size, min_periods=1, center=True).mean()
+            sb_max *= 1 / seabed.rolling(ping_time=window_size, min_periods=1, center=True).std()
 
             for f in range(sb_max.shape[0]):
                 i = i_edge
-                while i < sb_max.shape[1] - i_edge:
-                    # Get interval [idx_0, idx_1] where seabed will be repaired for frequency f
-                    if sb_max[f, i] < repair_threshold:
-                        idx_0 = i
-                        while i < sb_max.shape[1]:
-                            if sb_max[f, i] < repair_threshold:
-                                i += 1
-                            else:
-                                break
-                        idx_1 = i - 1
-                        # Replace initial seabed values with mean value before/after repair interval
-                        if idx_0 <= i_edge:
-                            seabed[f, idx_0:idx_1 + 1] = seabed[f, idx_1 + 1]
-                        elif idx_1 >= sb_max.shape[0] - i_edge:
-                            seabed[f, idx_0:idx_1 + 1] = seabed[f, idx_0 - 1]
-                        else:
-                            seabed[f, idx_0:idx_1 + 1] = np.mean(seabed[f, [idx_0 - 1, idx_1 + 1]])
-                    i += 1
 
-            return np.rint(np.median(seabed, axis=0)).astype(int)
+                # Get indices of
+                to_fix = np.argwhere(abs(sb_max[f, i:]).values > repair_threshold).ravel() + i
+                k = 0
+                while k < len(to_fix):
+                    idx_0 = to_fix[k]
 
+                    # Check if there is multiple subsequent indexes that needs repair
+                    c = 0
+                    while to_fix[k + c] == idx_0 + c:
+                        c += 1
+                        if k + c == len(to_fix):
+                            break
+                    idx_1 = idx_0 + c - 1
+
+                    if idx_0 <= i_edge:
+                        seabed[f, idx_0:idx_1 + 1] = seabed[f, idx_1 + 1]
+                    elif idx_1 >= sb_max.shape[1] - i_edge:
+                        seabed[f, idx_0:idx_1 + 1] = seabed[f, idx_0 - 1]
+                    else:
+                        seabed[f, idx_0:idx_1 + 1] = (seabed[f, [idx_0 - 1, idx_1 + 1]]).mean()
+
+                    k += c
+
+            s = xr.ufuncs.rint(seabed.median(dim='frequency'))
+            self.seabed_dataset = xr.Dataset(data_vars={'seabed': s}, coords={'ping_time': s.ping_time})
+
+            # save to zarr file
+            if save_to_file:
+                self.seabed_dataset.to_zarr(self.seabed_path)
+            return self.seabed_dataset
 
     # TODO Save to file, not in zarr?
     def _create_label_mask(self, heave=True):
@@ -969,7 +983,7 @@ class DataReaderZarr():
 def get_zarr_files(frequencies=[18, 38, 120, 200], minimum_shape=256):
     path_to_zarr_files = paths.path_to_zarr_files()
     zarr_files = sorted([z_file for z_file in os.listdir((path_to_zarr_files)) \
-                         if '_obj' not in z_file and '.zarr' in z_file])
+                         if '_obj' not in z_file and 'seabed' not in z_file and '.zarr' in z_file])
 
     zarr_readers = [DataReaderZarr(os.path.join(path_to_zarr_files, zarr_file)) for zarr_file in zarr_files]
 
