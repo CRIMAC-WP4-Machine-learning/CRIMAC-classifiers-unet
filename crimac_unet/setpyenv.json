@@ -1,0 +1,11 @@
+{
+    "scratch": "/datain/",
+    "syspath": "/crimac_unet/",
+    "path_to_echograms": "/datain/",
+    "path_to_korona_data": "/datain/",
+    "path_to_korona_transducer_depths": "/datain/",
+    "path_to_trained_model": "/nr/project/bild/Cogmar/usr/utseth/models/freq_38_200_1.pt",
+    "path_to_zarr_files": "/nr/project/bild/CRIMAC/Data/zarr_test/2_freq_data/",
+    "path_for_saving_figs":  "/dataout/",
+    "path_for_saving_preds_labels": "/nr/project/bild/CRIMAC/data/test"
+}

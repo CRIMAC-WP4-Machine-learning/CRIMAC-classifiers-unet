@@ -918,7 +918,7 @@ class DataReaderZarr():
 
             # Use rolling mean and rolling std with window of 500 to find jumps in the seabed altitude
             repair_threshold = 0.75
-            window_size = 500
+            window_size = 400
             sb_max = seabed - seabed.rolling(ping_time=window_size, min_periods=1, center=True).mean()
             sb_max *= 1 / seabed.rolling(ping_time=window_size, min_periods=1, center=True).std()
 

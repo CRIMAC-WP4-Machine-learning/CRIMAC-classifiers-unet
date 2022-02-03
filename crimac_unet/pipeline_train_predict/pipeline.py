@@ -669,7 +669,6 @@ class SegPipe():
                     ech_name = ech
 
                     ds = _create_ds_predictions(survey, preds, ech_name)
-
                     if ds is not None:
                         # Re-chunk so that we have a full range in a chunk (zarr only)
                         ds = ds.chunk({"range": ds.range.shape[0], "ping_time": 'auto'})
@@ -947,11 +946,12 @@ class DataMemm():
     """ Object to represent memmap data features for the training-prediction pipeline """
     def __init__(self, opt):
         self.opt = opt
-        if opt.unit_frequency == 'kHz':
+        self.frequencies = opt.frequencies
+        if self.frequencies == 'all':
             self.frequencies = [18, 38, 120, 200]
-        elif opt.unit_frequency == 'Hz':
-            self.frequencies = [18000, 38000, 120000, 200000]
-        else:
+        if self.unit_frequency == 'Hz':
+            self.frequencies = [freq*1000 for freq in self.frequencies]
+        elif self.unit_frequency != 'kHz':
             print("unit_frequency should be 'Hz' or 'kHz'")
         self.window_dim = opt.window_dim
         self.window_size = [self.window_dim, self.window_dim]
@@ -1057,11 +1057,12 @@ class DataZarr():
     """ Object to represent zarr data features for the training-prediction pipeline """
     def __init__(self, opt):
         self.opt = opt
-        if opt.unit_frequency == 'kHz':
+        self.frequencies = opt.frequencies
+        if self.frequencies == 'all':
             self.frequencies = [18, 38, 120, 200]
-        elif opt.unit_frequency == 'Hz':
-            self.frequencies = [18000, 38000, 120000, 200000]
-        else:
+        if self.unit_frequency == 'Hz':
+            self.frequencies = [freq*1000 for freq in self.frequencies]
+        elif self.unit_frequency != 'kHz':
             print("unit_frequency should be 'Hz' or 'kHz'")
         self.window_dim = opt.window_dim
         self.window_size = [self.window_dim, self.window_dim]
