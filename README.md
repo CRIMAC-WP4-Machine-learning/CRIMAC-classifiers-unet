@@ -38,6 +38,7 @@ This repository contains scripts for:
 ## Make predictions with a trained model and save the results
 1. Set the following configuration options in the pipeline_config.yaml file:    
     * 'data_mode' can be either 'zarr' (if working with zarr files) or 'memm' (if working with memmap files)
+    * 'frequencies' should be a list of frequencies the model is trained on ([18, 38, 120, 200] for the model from Olav's paper). 
     * 'unit_frequency' should be set to 'Hz' if 'zarr' mode is selected and to 'kHz' if 'memm' is selected    
     * 'partition_predict' can be 'selected surveys', 'single survey' or 'all surveys'
     * 'selected_surveys' should be a list of the names of the selected surveys. Should not be an empty list if the previous parameter ('partition_predict') is 'selected surveys' OR 'single survey'.
@@ -52,6 +53,7 @@ This repository contains scripts for:
 ## Make predictions with a trained model without saving the results
 1. Set the following configuration options in the pipeline_config.yaml file:
     * 'data_mode' can be either 'zarr' (if working with zarr files) or 'memm' (if working with memmap files)
+    * 'frequencies' should be a list of frequencies the model is trained on ([18, 38, 120, 200] for the model from Olav's paper). 
     * 'unit_frequency' should be set to 'Hz' if 'zarr' mode is selected and to 'kHz' if 'memm' is selected    
     * 'partition_predict' can be 'selected surveys', 'single survey' or 'all surveys'
     * 'selected_surveys' should be a list of the names of the selected surveys. Should not be an empty list if the previous parameter ('partition_predict') is 'selected surveys' OR 'single survey'.

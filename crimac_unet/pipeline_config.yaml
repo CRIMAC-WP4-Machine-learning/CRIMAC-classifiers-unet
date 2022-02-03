@@ -5,7 +5,7 @@ data_mode: 'zarr'
 # Frequency unit (Options: Hz or KHz)
 unit_frequency: 'Hz'
 # Frequencies used for training and predictions
-frequencies: [18, 200]
+frequencies: [18, 38, 120, 200]
 # Cuda device id (default: 0) if not available cpu is used
 dev: 2
 # Number of data loading workers (default: 10)
