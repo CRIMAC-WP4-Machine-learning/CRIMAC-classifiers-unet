@@ -482,6 +482,21 @@ class DataReaderZarr():
         # Get seabed if saved in zarr_file, returns None otherwise
         self._seabed = self.ds.get('seabed')
 
+    def get_ping_index(self, ping_time):
+        """
+        Due to rounding errors, the ping_time variable for labels and data are not exactly equal
+        :param ping_time: (np.datetime64)
+        :return: (int) index of closest index in data time_vector
+        """
+
+        return int(np.abs((self.time_vector - ping_time)).argmin().values)
+
+    def get_range_index(self, range):
+        """
+        Get closest index in range_vector
+        """
+        return int(np.abs((self.range_vector - range)).argmin().values)
+
     def get_rawfile_start_idx(self):
         """
         Get the start index of each raw file. Returns vector where length = nr of rawfiles in zarr file
@@ -573,7 +588,65 @@ class DataReaderZarr():
             data = data.dropna(dim='range')
         return data
 
-    def get_data_ping_range(self, ping_idx, range_idx, frequencies=None, drop_na=True):
+    def get_data_slice(self, idx_ping: (int, None) = None, n_pings: (int, None) = None, idx_range: (int, None) = None, n_range: (int, None) = None,
+                  frequencies: (int, list, None) = None, drop_na=True, return_numpy=True):
+        '''
+        Get slice of xarray.Dataset based on indices in terms of (frequency, ping_time, range).
+        Arguments for 'ping_time' and 'range' indices are given as the start index and the number of subsequent indices.
+        'range' and 'frequency' arguments are optional.
+
+        :param idx_ping: (int) First ping_time index of the slice
+        :param n_pings: (int) Number of subsequent ping_time indices of the slice
+        :param idx_range: (int | None) First range index of the slice (None slices from first range index)
+        :param n_range: (int | None) Number of subsequent range indices of the slice (None slices to last range index)
+        :param frequencies: (int | list[int] | None) Frequencies in slice (None returns all frequencies)
+        :return: Sliced xarray.Dataset
+
+        Example:
+        ds_slice = ds.get_slice(idx_ping=20000, n_pings=256) # xarray.Dataset sliced in 'ping_time' dimension [20000:20256]
+        sv_data = ds_slice.sv # xarray.DataArray of underlying sv data
+        sv_data_numpy = sv_data.values # numpy.ndarray of underlying sv data
+        '''
+
+        assert isinstance(idx_ping, (int, np.integer, type(None)))
+        assert isinstance(n_pings, (int, np.integer, type(None)))
+        assert isinstance(idx_range, (int, type(None)))
+        assert isinstance(n_range, (int, np.integer, type(None)))
+        assert isinstance(frequencies, (int, np.integer, list, type(None)))
+        if isinstance(frequencies, list):
+            assert all([isinstance(f, (int, np.integer)) for f in frequencies])
+
+        if idx_ping is None:
+            slice_ping_time = slice(None, n_pings)  # Valid for n_range int, None
+        elif n_pings is None:
+            slice_ping_time = slice(idx_range, None)
+        else:
+            slice_ping_time = slice(idx_ping, idx_ping + n_pings)
+
+        if idx_range is None:
+            slice_range = slice(None, n_range)  # Valid for n_range int, None
+        elif n_range is None:
+            slice_range = slice(idx_range, None)
+        else:
+            slice_range = slice(idx_range, idx_range + n_range)
+
+        if frequencies is None:
+            frequencies = self.frequencies
+        # Make sure frequencies is array-like to preserve dims when slicing
+        if isinstance(frequencies, (int, np.integer)):
+            frequencies = [frequencies]
+
+        data = self.ds.sv.sel(frequency=frequencies).isel(ping_time=slice_ping_time, range=slice_range)
+
+        if drop_na:
+            data = data.dropna(dim='range')
+
+        if return_numpy:
+            return data.values
+        else:
+            return data
+
+    def get_data_ping_range(self, ping_idx=None, range_idx=None, frequencies=None, drop_na=True):
         """
         Get data for specified ping or ping interval and range or range interval
         :param ping_idx: (tuple/list/int) ping index or ping interval
@@ -583,6 +656,10 @@ class DataReaderZarr():
         """
         if frequencies is None:
             frequencies = self.frequencies
+        if ping_idx is None:
+            ping_idx = (0, self.shape[1])
+        if range_idx is None:
+            range_idx = (0, self.shape[0])
 
         if (type(ping_idx) == tuple or type(ping_idx) == list) and (
                 type(range_idx) == tuple or type(range_idx) == list):
@@ -666,25 +743,6 @@ class DataReaderZarr():
         else:
             return labels
 
-    def data_numpy(self, raw_file, frequencies=None):
-        """
-        Get data for specified raw file in numpy format
-        :param raw_file: (str)
-        :param frequencies: (list)
-        :return (numpy.array)
-        """
-        data = self.get_data_rawfile(raw_file, frequencies)
-        return np.array(data)  # read into memory
-
-    def label_numpy(self, raw_file):
-        """
-        Get annotation mask for specified raw file
-        :param raw_file:
-        :return: (numpy.array)
-        """
-        label = self.get_labels_rawfile(raw_file)
-        return np.array(label)  # read into memory
-
     def get_bounding_boxes(self, raw_file):
         """
         Retrieve object (fish school) bounding boxes for specified raw file
@@ -697,25 +755,6 @@ class DataReaderZarr():
         fish_labels = raw_obj.fish_type_index.values  # .squeeze(1)
         bounding_boxes = raw_obj.bounding_box.values  # .squeeze(2)  # (bbox, length)
         return bounding_boxes, fish_labels
-
-    def data_numpy(self, raw_file, frequencies=None):
-        """
-        Get data for specified raw file in numpy format
-        :param raw_file: (str)
-        :param frequencies: (list)
-        :return (numpy.array)
-        """
-        data = self.get_data_rawfile(raw_file, frequencies)
-        return np.array(data)  # read into memory
-
-    def label_numpy(self, raw_file):
-        """
-        Get annotation mask for specified raw file
-        :param raw_file:
-        :return: (numpy.array)
-        """
-        label = self.get_labels_rawfile(raw_file)
-        return np.array(label)  # read into memory
 
     def filter(self, min_shape=256):
         raw_file_excluded = []

@@ -137,6 +137,8 @@ def get_crop_zarr(zarr_file, center_loc, window_size, freqs):
         y0 = 0
     if x0 < 0:
         x0 = 0
+
+    # TODO replace get_data_ping_range with get_data_slice
     channels = zarr_file.get_data_ping_range((x0, x1), (y0, y1), frequencies=freqs, drop_na=True)
     labels = zarr_file.get_label_ping_range((x0, x1), (y0, y1), drop_na=True)
 

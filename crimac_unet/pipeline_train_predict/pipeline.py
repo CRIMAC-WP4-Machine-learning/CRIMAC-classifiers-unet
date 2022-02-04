@@ -413,6 +413,127 @@ class SegPipe():
         else:
             return seg
 
+    def predict_zarr(self, zarr_reader, sandeel_only=True):
+        """
+        Predict a zarr file based on the sandeel survey
+        """
+
+        def _get_patch_prediction(patch):
+            '''
+            Converts numpy data patch to torch tensor, predicts with model, and converts back to numpy.
+            :param patch: (np.array) Input data patch
+            :return: (np.array) Prediction
+            '''
+            patch = np.expand_dims(np.moveaxis(patch, -1, 0), 0)
+            self.model.eval()
+            with torch.no_grad():
+                patch = torch.Tensor(patch).float()
+                patch = patch.to(self.device)
+                patch = F.softmax(self.model(patch), dim=1).cpu().numpy()
+            patch = np.moveaxis(patch.squeeze(0), 0, -1)
+            return patch
+
+        patch_size = [self.window_dim, self.window_dim]
+        patch_overlap = [20, 20]
+
+        # Get all data as xarray
+        # Data shape (C, W, H)
+        data = zarr_reader.get_data_slice(frequencies=self.frequencies, return_numpy=False, drop_na=False)
+
+        # TODO: Need to test on data with labels available
+        # Output labels and preds with shape (W, H, C)
+        if self.labels_available:
+            labels = xr.DataArray(data=np.zeros((data.shape[1], data.shape[2])).astype(np.int16),
+                                  dims=['ping_time', 'range'],
+                                  coords={'ping_time': zarr_reader.time_vector,
+                                          'range': zarr_reader.range_vector,
+                                          })
+
+        # Prepare predictions xarray dataset for the entire survey, to be filled in the loop
+        predictions = xr.DataArray(data=np.zeros((data.shape[1], data.shape[2], 3)).astype(np.float16),
+                                   dims=['ping_time', 'range', 'category'],
+                                   coords={'ping_time': zarr_reader.time_vector,
+                                           'range': zarr_reader.range_vector,
+                                           'category': [0, 1, 2]
+                                           })
+
+        # Pad with zeros on edges
+        data = data.pad(range=patch_overlap[1], ping_time=patch_overlap[0], mode='constant', constant_values=0)
+
+        # Get indexes of patches
+        upper_left_x = np.arange(0, data.ping_time.shape[0] - patch_overlap[0], patch_size[0] - patch_overlap[0] * 2)
+        upper_left_y = np.arange(0, data.range.shape[0] - patch_overlap[1], patch_size[1] - patch_overlap[1] * 2)
+
+        # Load model
+        self.load_model_params()
+
+        # Get patches, run through model
+        for x in upper_left_x:
+            for y in upper_left_y:
+                # Get a patch of data, convert to numpy
+                data_patch = data[:, x:x+patch_size[0], y:y+patch_size[1]].values
+
+                # Swap axes to match echogram
+                # Patch shape (C, H, W)
+                data_patch = np.array(data_patch).swapaxes(1, 2)
+
+                # set infinite values to 0
+                data_patch[np.invert(np.isfinite(data_patch))] = 0
+
+                if self.labels_available:
+                    # TODO
+                    pass
+
+                # transform data, data patch shape (H, W, C)
+                data_patch = db_with_limits(data_patch, None, None, None)[0]
+                data_patch = np.moveaxis(data_patch, 0, -1)
+
+                # Pad with zeros if we are at the edges
+                pad_val_0 = patch_size[0] - data_patch.shape[0] # Vertical/range dim
+                pad_val_1 = patch_size[1] - data_patch.shape[1] # Horizontal/ping time dim
+
+                if pad_val_0 > 0:
+                    data_patch = np.pad(data_patch, [[0, pad_val_0], [0, 0], [0, 0]], 'constant')
+
+                if pad_val_1 > 0:
+                    data_patch = np.pad(data_patch, [[0, 0], [0, pad_val_1], [0, 0]], 'constant')
+
+                # run through the model
+                pred_patch = _get_patch_prediction(data_patch)
+                # Remove potential padding related to edges
+                pred_patch = pred_patch[0:patch_size[0] - pad_val_0, 0:patch_size[1] - pad_val_1, :]
+
+                # Remove potential padding related to overlap between data_patches
+                pred_patch = pred_patch[patch_overlap[0]:-patch_overlap[0], patch_overlap[1]:-patch_overlap[1], :]
+
+                # Swap axes to fit predictions array
+                pred_patch = pred_patch.swapaxes(0, 1) # Now has shape (W, H, C)
+
+                # Fill predictions xarray
+                predictions[x:x + pred_patch.shape[0], y:y + pred_patch.shape[1]] = pred_patch
+
+        # do post_processing
+        seabed = zarr_reader.get_seabed()
+        assert seabed.shape[0] == predictions.shape[0]
+
+        if sandeel_only:
+            predictions = predictions[:, :, 1] # Return only sandeel predictions
+
+        for x, y in enumerate(seabed):
+            if sandeel_only == True:
+                predictions[x, y.values:] = 0
+            else:
+                predictions[x, y.values:, 0] = 1  # Set the probability of having background to 1 below sea floor
+                predictions[x, y.values:, 1] = 0
+                predictions[x, y.values:, 2] = 0
+
+        if self.labels_available:
+            print('WARNING function predict_zarr not yet implemented with labels, returns empty label array')
+            return predictions, labels
+        else:
+            return predictions
+
+
     def get_extended_label_mask_for_echogram(self, ech, extend_size, raw_file=None):
         """
         Computes an evaluation mask useful when the evaluation mode is set to 'region' or 'fish'
@@ -579,35 +700,32 @@ class SegPipe():
         This function loops over surveys and different surveys may be considered depending on the chosen partition for the prediction.
         """
 
-        def _create_ds_predictions(survey, preds, ech_name):
-            t0 = np.where(survey.time_vector.raw_file.values == ech_name)[0][0]
-            t1 = np.where(survey.time_vector.raw_file.values == ech_name)[0][-1]
-
+        def _create_ds_predictions(survey, preds):
             # Create xarray dataset
             ds = xr.Dataset({
                 'pred_sandeel': xr.DataArray(data=preds[:,:,1].astype(np.float16),
-                                             dims=['range', 'ping_time'],
-                                             coords={'range': survey.range_vector,
-                                                     'ping_time': survey.time_vector[t0:t1 + 1],
+                                             dims=['ping_time', 'range'],
+                                             coords={'ping_time': survey.time_vector,
+                                                     'range': survey.range_vector,
                                                      },
                                              ),
                 'pred_background': xr.DataArray(data=preds[:, :, 0].astype(np.float16),
-                                             dims=['range', 'ping_time'],
-                                             coords={'range': survey.range_vector,
-                                                     'ping_time': survey.time_vector[t0:t1 + 1],
+                                             dims=['ping_time', 'range'],
+                                             coords={'ping_time': survey.time_vector,
+                                                     'range': survey.range_vector,
                                                      },
                                              ),
                 'pred_other': xr.DataArray(data=preds[:, :, 2].astype(np.float16),
-                                             dims=['range', 'ping_time'],
-                                             coords={'range': survey.range_vector,
-                                                     'ping_time': survey.time_vector[t0:t1 + 1],
-                                                     },
+                                           dims=['ping_time', 'range'],
+                                           coords={'ping_time': survey.time_vector,
+                                                   'range': survey.range_vector,
+                                                   },
                                              ),
             },
                 attrs={'description': 'predictions saved to zarr'}
             )
 
-            ds.coords["raw_file"] = ("ping_time", [ech_name] * len(ds.ping_time))
+            ds.coords["raw_file"] = ("ping_time", survey.raw_file)
 
             return ds
 
@@ -635,11 +753,8 @@ class SegPipe():
         with torch.no_grad():
             for j, survey in enumerate(surveys_list):
 
-                print(f'Survey {surveys_list[j].name}')
-                selected_echs = survey.raw_file_included
-
-
-                target_dname = self.dir_save_preds_labels + surveys_list[j].name + '_pred' + '.zarr'
+                print(f'Survey {survey.name}')
+                target_dname = self.dir_save_preds_labels + survey.name + '_pred' + '.zarr'
                 print('Saving predictions to', target_dname)
 
                 if resume != True:
@@ -653,34 +768,26 @@ class SegPipe():
                     "No predictions were performed for this survey, please set the option --resume to False"
                     write_first_loop = False
                     print(f'Trying to resume predictions')
-                    predicted_raw_files = np.unique(xr.open_zarr(target_dname).raw_file)
-                    selected_echs = list(list(set(predicted_raw_files) - set(selected_echs)) + list(set(predicted_raw_files) - set(selected_echs)))
-                    if len(selected_echs) == 0:
-                        print("Cannot resume predictions as no new raw files were detected")
-                        continue
+                    print(f'ERROR resume prediction not yet implemented')
 
-                for ii, ech in enumerate(selected_echs):
-                    print("[Step %d/%d]" % (ii+1, len(selected_echs)))
+                if self.labels_available:
+                    print('NB! predict_zarr is not yet implemented with available labels')
+                    preds, labels = self.predict_zarr(zarr_reader=survey, sandeel_only=False)
+                else:
+                    preds = self.predict_zarr(zarr_reader=survey, sandeel_only=False)
 
-                    if self.labels_available:
-                        preds, labels = self.predict_echogram(survey, ech, sandeel_only=False)
+                ds = _create_ds_predictions(survey, preds)
+                if ds is not None:
+                    # Re-chunk so that we have a full range in a chunk (zarr only)
+                    ds = ds.chunk({"range": ds.range.shape[0], "ping_time": 'auto'})
+
+                    compressor = Blosc(cname='zstd', clevel=3, shuffle=Blosc.BITSHUFFLE)
+                    encoding = {var: {"compressor": compressor} for var in ds.data_vars}
+                    if write_first_loop == False:
+                        ds.to_zarr(target_dname, append_dim="ping_time")
                     else:
-                        preds = self.predict_echogram(survey, ech, sandeel_only=False)
-                    ech_name = ech
+                        ds.to_zarr(target_dname, mode="w", encoding=encoding)
 
-                    ds = _create_ds_predictions(survey, preds, ech_name)
-                    if ds is not None:
-                        # Re-chunk so that we have a full range in a chunk (zarr only)
-                        ds = ds.chunk({"range": ds.range.shape[0], "ping_time": 'auto'})
-
-                        compressor = Blosc(cname='zstd', clevel=3, shuffle=Blosc.BITSHUFFLE)
-                        encoding = {var: {"compressor": compressor} for var in ds.data_vars}
-                        if write_first_loop == False:
-                            ds.to_zarr(target_dname, append_dim="ping_time")
-                        else:
-                            ds.to_zarr(target_dname, mode="w", encoding=encoding)
-
-                        write_first_loop = False
 
     def compute_and_plot_evaluation_metrics(self, selected_surveys=[], colors_list=[]):
         """
