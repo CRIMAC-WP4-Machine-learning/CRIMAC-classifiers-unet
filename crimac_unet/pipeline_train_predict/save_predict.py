@@ -31,6 +31,9 @@ if __name__ == '__main__':
     # Save segmentation predictions
     print("Save predictions")
     start = time.time()
-    segpipe.save_segmentation_predictions_in_zarr(selected_surveys=opt.selected_surveys,
+    if opt.data_mode == 'zarr':
+        segpipe.save_segmentation_predictions_in_zarr(selected_surveys=opt.selected_surveys,
                                                   resume=opt.resume_writing)
+    else:
+        segpipe.save_segmentation_predictions_sandeel(selected_surveys=opt.selected_surveys)
     print(f"Executed time for saving all prediction (h): {np.round((time.time() - start) / 3600, 2)}")

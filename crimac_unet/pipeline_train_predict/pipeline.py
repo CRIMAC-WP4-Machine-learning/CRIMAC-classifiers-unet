@@ -1038,19 +1038,19 @@ class DataMemm():
         samplers_train = [
             Background(echograms_train, self.window_size),
             Seabed(echograms_train, self.window_size),
-            School(echograms_train, window_size=self.window_size, fish_type=27),
-            School(echograms_train, window_size=self.window_size, fish_type=1),
-            SchoolSeabed(echograms_train, window_size=self.window_size, max_dist_to_seabed=self.window_dim // 2, fish_type=27),
-            SchoolSeabed(echograms_train, window_size=self.window_size, max_dist_to_seabed=self.window_dim // 2, fish_type=1)
+            School(echograms_train, 27),
+            School(echograms_train, 1),
+            SchoolSeabed(echograms_train, self.window_dim // 2, 27),
+            SchoolSeabed(echograms_train, self.window_dim // 2, 1)
         ]
 
         samplers_test = [
             Background(echograms_test, self.window_size),
             Seabed(echograms_test, self.window_size),
-            School(echograms_test, window_size=self.window_size, fish_type=27),
-            School(echograms_test, window_size=self.window_size, fish_type=1),
-            SchoolSeabed(echograms_test, window_size=self.window_size, max_dist_to_seabed=self.window_dim // 2, fish_type=27),
-            SchoolSeabed(echograms_test, window_size=self.window_size, max_dist_to_seabed=self.window_dim // 2, fish_type=1)
+            School(echograms_test, 27),
+            School(echograms_test, 1),
+            SchoolSeabed(echograms_test, self.window_dim // 2, 27),
+            SchoolSeabed(echograms_test, self.window_dim // 2, 1)
         ]
 
         sampler_probs = [1, 5, 5, 5, 5, 5]
@@ -1099,6 +1099,7 @@ class DataZarr():
             np.random.seed(seed=10)
             np.random.shuffle(self.zarr_readers)
 
+
             train = self.zarr_readers[:int(portion_train * len(self.zarr_readers))]
             test = self.zarr_readers[int(portion_train * len(self.zarr_readers)):]
 
@@ -1143,19 +1144,19 @@ class DataZarr():
         samplers_train = [
             BackgroundZarr(echograms_train, self.window_size),
             SeabedZarr(echograms_train, self.window_size),
-            SchoolZarr(echograms_train, window_size=self.window_size, fish_type=27),
-            SchoolZarr(echograms_train, window_size=self.window_size, fish_type=1),
-            SchoolSeabedZarr(echograms_train, window_size=self.window_size, max_dist_to_seabed=self.window_dim // 2, fish_type=27),
-            SchoolSeabedZarr(echograms_train, window_size=self.window_size, max_dist_to_seabed=self.window_dim // 2, fish_type=1)
+            SchoolZarr(echograms_train, self.window_size, 27),
+            SchoolZarr(echograms_train,  self.window_size, 1),
+            SchoolSeabedZarr(echograms_train, max_dist_to_seabed=self.window_size[0]//2, fish_type=27),
+            SchoolSeabedZarr(echograms_train, max_dist_to_seabed=self.window_size[0]//2, fish_type=1)
         ]
 
         samplers_test = [
             BackgroundZarr(echograms_test, self.window_size),
             SeabedZarr(echograms_test, self.window_size),
-            SchoolZarr(echograms_test, window_size=self.window_size, fish_type=27),
-            SchoolZarr(echograms_test, window_size=self.window_size, fish_type=1),
-            SchoolSeabedZarr(echograms_test, window_size=self.window_size, max_dist_to_seabed=self.window_dim // 2, fish_type=27),
-            SchoolSeabedZarr(echograms_test, window_size=self.window_size, max_dist_to_seabed=self.window_dim // 2, fish_type=1)
+            SchoolZarr(echograms_test, self.window_size, 27),
+            SchoolZarr(echograms_test, self.window_size, 1),
+            SchoolSeabedZarr(echograms_test, max_dist_to_seabed=self.window_size[0]//2, fish_type=27),
+            SchoolSeabedZarr(echograms_test, max_dist_to_seabed=self.window_size[0]//2, fish_type=1)
         ]
 
         sampler_probs = [1, 5, 5, 5, 5, 5]
