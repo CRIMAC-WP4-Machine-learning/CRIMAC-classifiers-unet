@@ -17,21 +17,21 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
 """
 
 import numpy as np
-from data.echogram import get_zarr_files, get_echograms
-import time
 
 class School():
-    def __init__(self, echograms, fish_type='all'):
+    def __init__(self, echograms, window_size, fish_type='all'):
         """
 
         :param echograms: A list of all echograms in set
         """
 
         self.echograms = echograms
+        self.window_size = window_size
         self.fish_type = fish_type
 
         self.Schools = []
-        #Remove echograms without fish
+
+        # Remove echograms without fish
         if self.fish_type == 'all':
             self.echograms = [e for e in self.echograms if len(e.objects)>0]
             for e in self.echograms:
@@ -65,79 +65,52 @@ class School():
 
         :return: [(int) y-coordinate, (int) x-coordinate], (Echogram) selected echogram
         """
-        #Random object
-
+        # Random object
         oi = np.random.randint(len(self.Schools))
         e,o  = self.Schools[oi]
 
-        #Random pixel in object
+        # Random pixel in object
         pi = np.random.randint(o['n_pixels'])
         y,x = o['indexes'][pi,:]
+
+        # Adjust coordinate by random shift in y and x direction, ensures school is not always in the middle of the crop
+        x += np.random.randint(-self.window_size[0]//2, self.window_size[0]//2 + 1)
+        y += np.random.randint(-self.window_size[1]//2, self.window_size[1]//2 + 1)
 
         return [y,x], e
 
 
 class SchoolZarr():
-    def __init__(self, zarr_files, fish_type='all'):
+    def __init__(self, zarr_files, window_size, fish_type='all'):
         self.zarr_files = zarr_files
+        self.window_size = window_size
 
-        # Initialize array with schools. Array shape is (N x 3), where N is the total number of schools in the zarr files,
-        # For each school, object length index and raw file index of the school in the object file is saved, along with
-        # the index of the corresponding zarr file in self.zarr_files
-        self.school_coords = np.empty((0, 3), np.int32)
+        self.schools = []
+        self.n_schools = 0
         for idx, zarr_file in enumerate(self.zarr_files):
-            objects = zarr_file.objects
+            df = zarr_file.get_fish_schools(category=fish_type)
 
-            if fish_type == 'all':
-                school_coords_year = np.argwhere(~np.isnan(objects.fish_type_index.values))
-            else:
-                if type(fish_type) == int:
-                    fish_type = [fish_type]
+            bboxes = df[['start_ping_idx', 'end_ping_idx', 'start_range_idx', 'end_range_idx']].values
 
-                school_coords_year = np.argwhere(
-                    ~np.isnan(objects.fish_type_index.where(objects.fish_type_index.isin(fish_type)).values))
+            self.schools.append((zarr_file, bboxes))
+            self.n_schools += bboxes.shape[0]
 
-            school_coords_year = np.hstack((school_coords_year, np.ones((len(school_coords_year), 1)) * idx)).astype(
-                np.int32)
-            self.school_coords = np.append(self.school_coords, school_coords_year, 0)
-
-        self.nr_schools = np.shape(self.school_coords)[0]
 
     def get_sample(self):
-        # Get random school
-        rand_idx = np.random.randint(self.nr_schools)
+        # get random zarr file
+        zarr_file_idx = np.random.randint(len(self.schools))
+        zarr_file, bboxes = self.schools[zarr_file_idx]
 
-        # Get "coordinates" of the school in the objects file
-        obj_len_idx, raw_file_idx, zarr_idx = self.school_coords[rand_idx, :]
+        # get random bbox
+        bbox = bboxes[np.random.randint(bboxes.shape[0])]
 
-        # Retrieve school bounding box
-        zarr_file = self.zarr_files[zarr_idx]
-        obj_box = zarr_file.objects.bounding_box[:, obj_len_idx, raw_file_idx]
+        # get random x, y value from bounding box
+        x = np.random.randint(bbox[0], bbox[1])  # ping dimension
+        y = np.random.randint(bbox[2], bbox[3])  # range dimension
 
-        # Get random x, y in bounding box
-        x = np.random.randint(obj_box[2], obj_box[3]) if obj_box[2] < obj_box[3] else int(obj_box[2].values)
-        y = np.random.randint(obj_box[0], obj_box[1]) if obj_box[0] < obj_box[1] else int(obj_box[0].values)
-
-        # Add start idx of raw_file to get x relative to entire zarr-file (not just raw file)
-        start_idx = zarr_file.get_rawfile_start_idx()[
-            np.argwhere(zarr_file.raw_file_included == obj_box.raw_file.values).squeeze()]
-        if start_idx.size == 0:
-            return self.get_sample()
-
-        x += start_idx
+        # Adjust coordinate by random shift in y and x direction, ensures school is not always in the middle of the crop
+        x += np.random.randint(-self.window_size[0]//2, self.window_size[0]//2 + 1)
+        y += np.random.randint(-self.window_size[1]//2, self.window_size[1]//2 + 1)
 
         return [x, y], zarr_file
-
-if __name__ == '__main__':
-    zarr_files = get_zarr_files()
-    t0 = time.time()
-    sz = SchoolZarr(zarr_files)
-    print(time.time() - t0)
-    print()
-
-    #echograms = get_echograms(years=2017)
-    #t0 = time.time()
-    #s = School(echograms)
-    #print(time.time() - t0)
-#
 

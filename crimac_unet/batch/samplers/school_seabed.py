@@ -17,18 +17,18 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
 """
 
 import numpy as np
-import xarray as xr
 
 from batch.samplers.school import School
 
 
 class SchoolSeabed():
-    def __init__(self, echograms, max_dist_to_seabed, fish_type='all'):
+    def __init__(self, echograms, window_size, max_dist_to_seabed, fish_type='all'):
         """
 
         :param echograms: A list of all echograms in set
         """
         self.echograms = echograms
+        self.window_size = window_size
 
         #Get Schools:
         self.Schools = School(echograms, fish_type).Schools
@@ -47,7 +47,7 @@ class SchoolSeabed():
         #Random object
 
         oi = np.random.randint(len(self.Schools))
-        e,o  = self.Schools[oi]
+        e,o = self.Schools[oi]
 
         #Random pixel in object
         pi = np.random.randint(o['n_pixels'])
@@ -55,61 +55,43 @@ class SchoolSeabed():
 
         #Todo: Call get_sample again if window does not contain seabed
 
+        # Adjust coordinate by random shift in y and x direction so that school is not always in the middle of the crop
+        x += np.random.randint(-self.window_size[0]//2, self.window_size[0]//2 + 1)
+        y += np.random.randint(-self.window_size[1]//2, self.window_size[1]//2 + 1)
+
         return [y,x], e
 
 
 class SchoolSeabedZarr():
-    def __init__(self, zarr_files, max_dist_to_seabed=10, window_size=(256, 256), fish_type='all'):
+    def __init__(self, zarr_files, window_size, max_dist_to_seabed=20, fish_type='all'):
         self.zarr_files = zarr_files
         self.window_size = window_size
 
-        self.school_coords = np.empty((0, 3), np.int32)
+        self.schools = []
         for idx, zarr_file in enumerate(self.zarr_files):
-            objects = zarr_file.objects
+            df = zarr_file.get_fish_schools(category=fish_type)
 
-            if fish_type == 'all':
-                school_coords_year = np.argwhere(~np.isnan(objects.fish_type_index.values))
-            else:
-                if type(fish_type) == int:
-                    fish_type = [fish_type]
-                school_coords_year = np.argwhere(
-                    ~np.isnan(objects.fish_type_index.where(objects.fish_type_index.isin(fish_type)).values))
+            # Filter on distance to seabed
+            df = df.loc[df.distance_to_seabed < max_dist_to_seabed]
+            bboxes = df[['start_ping_idx', 'end_ping_idx', 'start_range_idx', 'end_range_idx']].values
 
-            # ignore schools not close to seabed
-            # TODO cleanup lines here
-            _objects = objects.bounding_box[:, xr.DataArray(school_coords_year[:, 0]),
-                       xr.DataArray(school_coords_year[:, 1])]
-            close = (np.abs(zarr_file.get_seabed()[
-                                ((_objects[2, :] + _objects[3, :]) / 2).astype(np.uint32)] - _objects[1, :])
-                     < max_dist_to_seabed)
-            school_coords_year = school_coords_year[close]
-            school_coords_year = np.hstack((school_coords_year, np.ones((len(school_coords_year), 1)) * idx)).astype(
-                np.int32)
-            self.school_coords = np.append(self.school_coords, school_coords_year, 0)
+            self.schools.append((zarr_file, bboxes))  # object id is not needed
 
-        self.nr_schools = np.shape(self.school_coords)[0]
 
     def get_sample(self):
-        # Get random school
-        rand_idx = np.random.randint(self.nr_schools)
+        # get random zarr file
+        zarr_file_idx = np.random.randint(len(self.schools))
+        zarr_file, bboxes = self.schools[zarr_file_idx]
 
-        # Get school location in objects file
-        obj_len_idx, raw_file_idx, zarr_idx = self.school_coords[rand_idx, :]
+        # get random bbox
+        bbox = bboxes[np.random.randint(bboxes.shape[0])]
 
-        # Get bounding box of random school
-        zarr_file = self.zarr_files[zarr_idx]
-        obj_box = zarr_file.objects.bounding_box[:, obj_len_idx, raw_file_idx]
+        # get random x, y value from bounding box
+        x = np.random.randint(bbox[0], bbox[1])  # ping dimension
+        y = np.random.randint(bbox[2], bbox[3])  # range dimension
 
-        # Get random x, y in bounding box
-        x = np.random.randint(obj_box[2], obj_box[3]) if obj_box[2] < obj_box[3] else int(obj_box[2].values)
-        y = np.random.randint(obj_box[0], obj_box[1]) if obj_box[0] < obj_box[1] else int(obj_box[0].values)
-
-        # Add start idx of raw_file to get x relative to entire zarr-file (not just raw file)
-        start_idx = zarr_file.get_rawfile_start_idx()[
-            np.argwhere(zarr_file.raw_file_included == obj_box.raw_file.values).squeeze()]
-        if start_idx.size == 0:
-            return self.get_sample()
-
-        x += start_idx
+        # Adjust coordinate by random shift in y and x direction so that school is not always in the middle of the crop
+        x += np.random.randint(-self.window_size[0]//2, self.window_size[0]//2 + 1)
+        y += np.random.randint(-self.window_size[1]//2, self.window_size[1]//2 + 1)
 
         return [x, y], zarr_file

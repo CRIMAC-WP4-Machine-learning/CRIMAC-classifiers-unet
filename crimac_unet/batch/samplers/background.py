@@ -69,22 +69,21 @@ class BackgroundZarr():
         # select random ping in zarr file
         x = np.random.randint(self.window_size[1] // 2, zarr_rand.shape[0] - self.window_size[1] // 2)
 
-        # Ensure that patch is inside one raw file/echogram
-        if len(np.unique(zarr_rand.raw_file[x - self.window_size[1] // 2:x + self.window_size[0]])) > 1:
-            return self.get_sample()  # if contains more than one echogram, draw new sample
-
         # Get y-loc above seabed
-        y = np.random.randint(0, zarr_rand.get_seabed()[x])
+        seabed = int(zarr_rand.get_seabed(x))
+
+        y = np.random.randint(0, seabed-self.window_size[0]//2)
 
         # Check if any fish_labels in the crop
-        labels = zarr_rand.get_label_ping([x - self.window_size[1] // 2, x + self.window_size[0] // 2])
-
-        # "adjust" y
-        y0 = y - self.window_size[0] // 2 if y - self.window_size[0] // 2 >= 0 else 0
-        y1 = y + self.window_size[0] // 2 if y + self.window_size[0] // 2 < labels.shape[1] else labels.shape[1]
+        labels = zarr_rand.get_label_slice(idx_ping=x-self.window_size[1]//2,
+                                           n_pings=self.window_size[1],
+                                           idx_range=y-self.window_size[0]//2,
+                                           n_range=self.window_size[0],
+                                           drop_na=False,
+                                           return_numpy=False)
 
         # Check if any fish-labels in crop
-        if np.any(labels[:, y0:y1] != 0):
+        if (labels > 0).any() or (labels == -1).all(): # Possible bottleneck?
             return self.get_sample()
 
         return [x, y], zarr_rand

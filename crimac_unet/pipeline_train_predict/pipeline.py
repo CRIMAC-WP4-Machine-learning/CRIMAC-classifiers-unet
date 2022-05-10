@@ -22,6 +22,7 @@ import numpy as np
 import pickle
 import pandas as pd
 from sklearn.metrics import auc, roc_curve, precision_recall_curve
+from tqdm import tqdm
 
 import torch
 import torch.nn as nn
@@ -65,13 +66,13 @@ class SegPipe():
         if self.frequencies == 'all':
             self.frequencies = [18, 38, 120, 200]
         if self.unit_frequency == 'Hz':
-            self.frequencies = [freq*1000 for freq in self.frequencies]
+            self.frequencies = sorted([freq*1000 for freq in self.frequencies])
         elif self.unit_frequency != 'kHz':
             print("unit_frequency should be 'Hz' or 'kHz'")
         self.window_dim = opt.window_dim
         self.window_size = [self.window_dim, self.window_dim]
         self.partition = opt.partition
-        self.data_mode = opt.data_mode
+        self.data_mode = opt.data_mode  # Zarr or memmap
         self.echograms = get_data_readers(frequencies=self.frequencies, minimum_shape=self.window_dim,
                                           mode=self.data_mode)
         self.device = torch.device(opt.dev if torch.cuda.is_available() else "cpu")
@@ -103,7 +104,9 @@ class SegPipe():
 
     def define_label_transform(self):
         """ Returns label transform functions to be applied when training """
-        label_transform = CombineFunctions([convert_label_indexing, refine_label_boundary(frequencies=self.frequencies)])
+        label_transform = CombineFunctions([convert_label_indexing,
+                                            refine_label_boundary(frequencies=self.frequencies,
+                                                                  threshold_freq=self.frequencies[-1])])
         return label_transform
 
     def load_model_params(self):
@@ -129,6 +132,8 @@ class SegPipe():
         :param dataloader_test: Validation set dataloader
         """
 
+        # TODO add tensorboard logger
+
         assert not os.path.exists(self.path_model_params), \
             'Attempting to train a model that already exists: ' + self.model_name + '\n' \
                                                                                     'Use a different model name or delete the model params file: ' + self.path_model_params
@@ -143,12 +148,11 @@ class SegPipe():
         criterion = nn.CrossEntropyLoss(weight=torch.Tensor([10, 300, 250]).to(self.device))
         optimizer = optim.SGD(self.model.parameters(), lr=self.lr, momentum=self.momentum)
         scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=self.lr_reduction)
-        # scheduler.step()
 
         # Train model
         for i, (inputs_train, labels_train) in enumerate(dataloader_train):
-
             print("[Step %d/%d]" % (i+1, len(dataloader_train)))
+
             # Load train data and transfer from numpy to pytorch
             inputs_train = inputs_train.float().to(self.device)
             labels_train = labels_train.long().to(self.device)
@@ -413,127 +417,6 @@ class SegPipe():
         else:
             return seg
 
-    def predict_zarr(self, zarr_reader, sandeel_only=True):
-        """
-        Predict a zarr file based on the sandeel survey
-        """
-
-        def _get_patch_prediction(patch):
-            '''
-            Converts numpy data patch to torch tensor, predicts with model, and converts back to numpy.
-            :param patch: (np.array) Input data patch
-            :return: (np.array) Prediction
-            '''
-            patch = np.expand_dims(np.moveaxis(patch, -1, 0), 0)
-            self.model.eval()
-            with torch.no_grad():
-                patch = torch.Tensor(patch).float()
-                patch = patch.to(self.device)
-                patch = F.softmax(self.model(patch), dim=1).cpu().numpy()
-            patch = np.moveaxis(patch.squeeze(0), 0, -1)
-            return patch
-
-        patch_size = [self.window_dim, self.window_dim]
-        patch_overlap = [20, 20]
-
-        # Get all data as xarray
-        # Data shape (C, W, H)
-        data = zarr_reader.get_data_slice(frequencies=self.frequencies, return_numpy=False, drop_na=False)
-
-        # TODO: Need to test on data with labels available
-        # Output labels and preds with shape (W, H, C)
-        if self.labels_available:
-            labels = xr.DataArray(data=np.zeros((data.shape[1], data.shape[2])).astype(np.int16),
-                                  dims=['ping_time', 'range'],
-                                  coords={'ping_time': zarr_reader.time_vector,
-                                          'range': zarr_reader.range_vector,
-                                          })
-
-        # Prepare predictions xarray dataset for the entire survey, to be filled in the loop
-        predictions = xr.DataArray(data=np.zeros((data.shape[1], data.shape[2], 3)).astype(np.float16),
-                                   dims=['ping_time', 'range', 'category'],
-                                   coords={'ping_time': zarr_reader.time_vector,
-                                           'range': zarr_reader.range_vector,
-                                           'category': [0, 1, 2]
-                                           })
-
-        # Pad with zeros on edges
-        data = data.pad(range=patch_overlap[1], ping_time=patch_overlap[0], mode='constant', constant_values=0)
-
-        # Get indexes of patches
-        upper_left_x = np.arange(0, data.ping_time.shape[0] - patch_overlap[0], patch_size[0] - patch_overlap[0] * 2)
-        upper_left_y = np.arange(0, data.range.shape[0] - patch_overlap[1], patch_size[1] - patch_overlap[1] * 2)
-
-        # Load model
-        self.load_model_params()
-
-        # Get patches, run through model
-        for x in upper_left_x:
-            for y in upper_left_y:
-                # Get a patch of data, convert to numpy
-                data_patch = data[:, x:x+patch_size[0], y:y+patch_size[1]].values
-
-                # Swap axes to match echogram
-                # Patch shape (C, H, W)
-                data_patch = np.array(data_patch).swapaxes(1, 2)
-
-                # set infinite values to 0
-                data_patch[np.invert(np.isfinite(data_patch))] = 0
-
-                if self.labels_available:
-                    # TODO
-                    pass
-
-                # transform data, data patch shape (H, W, C)
-                data_patch = db_with_limits(data_patch, None, None, None)[0]
-                data_patch = np.moveaxis(data_patch, 0, -1)
-
-                # Pad with zeros if we are at the edges
-                pad_val_0 = patch_size[0] - data_patch.shape[0] # Vertical/range dim
-                pad_val_1 = patch_size[1] - data_patch.shape[1] # Horizontal/ping time dim
-
-                if pad_val_0 > 0:
-                    data_patch = np.pad(data_patch, [[0, pad_val_0], [0, 0], [0, 0]], 'constant')
-
-                if pad_val_1 > 0:
-                    data_patch = np.pad(data_patch, [[0, 0], [0, pad_val_1], [0, 0]], 'constant')
-
-                # run through the model
-                pred_patch = _get_patch_prediction(data_patch)
-                # Remove potential padding related to edges
-                pred_patch = pred_patch[0:patch_size[0] - pad_val_0, 0:patch_size[1] - pad_val_1, :]
-
-                # Remove potential padding related to overlap between data_patches
-                pred_patch = pred_patch[patch_overlap[0]:-patch_overlap[0], patch_overlap[1]:-patch_overlap[1], :]
-
-                # Swap axes to fit predictions array
-                pred_patch = pred_patch.swapaxes(0, 1) # Now has shape (W, H, C)
-
-                # Fill predictions xarray
-                predictions[x:x + pred_patch.shape[0], y:y + pred_patch.shape[1]] = pred_patch
-
-        # do post_processing
-        seabed = zarr_reader.get_seabed()
-        assert seabed.shape[0] == predictions.shape[0]
-
-        if sandeel_only:
-            predictions = predictions[:, :, 1] # Return only sandeel predictions
-
-        for x, y in enumerate(seabed):
-            if sandeel_only == True:
-                predictions[x, y.values:] = 0
-            else:
-                predictions[x, y.values:, 0] = 1  # Set the probability of having background to 1 below sea floor
-                predictions[x, y.values:, 1] = 0
-                predictions[x, y.values:, 2] = 0
-
-        if self.labels_available:
-            print('WARNING function predict_zarr not yet implemented with labels, returns empty label array')
-            return predictions, labels
-        else:
-            return predictions
-
-
     def get_extended_label_mask_for_echogram(self, ech, extend_size, raw_file=None):
         """
         Computes an evaluation mask useful when the evaluation mode is set to 'region' or 'fish'
@@ -700,32 +583,35 @@ class SegPipe():
         This function loops over surveys and different surveys may be considered depending on the chosen partition for the prediction.
         """
 
-        def _create_ds_predictions(survey, preds):
+        def _create_ds_predictions(survey, preds, ech_name):
+            t0 = np.where(survey.time_vector.raw_file.values == ech_name)[0][0]
+            t1 = np.where(survey.time_vector.raw_file.values == ech_name)[0][-1]
+
             # Create xarray dataset
             ds = xr.Dataset({
                 'pred_sandeel': xr.DataArray(data=preds[:,:,1].astype(np.float16),
-                                             dims=['ping_time', 'range'],
-                                             coords={'ping_time': survey.time_vector,
-                                                     'range': survey.range_vector,
+                                             dims=['range', 'ping_time'],
+                                             coords={'range': survey.range_vector,
+                                                     'ping_time': survey.time_vector[t0:t1 + 1],
                                                      },
                                              ),
                 'pred_background': xr.DataArray(data=preds[:, :, 0].astype(np.float16),
-                                             dims=['ping_time', 'range'],
-                                             coords={'ping_time': survey.time_vector,
-                                                     'range': survey.range_vector,
+                                             dims=['range', 'ping_time'],
+                                             coords={'range': survey.range_vector,
+                                                     'ping_time': survey.time_vector[t0:t1 + 1],
                                                      },
                                              ),
                 'pred_other': xr.DataArray(data=preds[:, :, 2].astype(np.float16),
-                                           dims=['ping_time', 'range'],
-                                           coords={'ping_time': survey.time_vector,
-                                                   'range': survey.range_vector,
-                                                   },
+                                             dims=['range', 'ping_time'],
+                                             coords={'range': survey.range_vector,
+                                                     'ping_time': survey.time_vector[t0:t1 + 1],
+                                                     },
                                              ),
             },
                 attrs={'description': 'predictions saved to zarr'}
             )
 
-            ds.coords["raw_file"] = ("ping_time", survey.raw_file)
+            ds.coords["raw_file"] = ("ping_time", [ech_name] * len(ds.ping_time))
 
             return ds
 
@@ -753,8 +639,11 @@ class SegPipe():
         with torch.no_grad():
             for j, survey in enumerate(surveys_list):
 
-                print(f'Survey {survey.name}')
-                target_dname = self.dir_save_preds_labels + survey.name + '_pred' + '.zarr'
+                print(f'Survey {surveys_list[j].name}')
+                selected_echs = survey.raw_file_included
+
+
+                target_dname = self.dir_save_preds_labels + surveys_list[j].name + '_pred' + '.zarr'
                 print('Saving predictions to', target_dname)
 
                 if resume != True:
@@ -768,26 +657,35 @@ class SegPipe():
                     "No predictions were performed for this survey, please set the option --resume to False"
                     write_first_loop = False
                     print(f'Trying to resume predictions')
-                    print(f'ERROR resume prediction not yet implemented')
+                    predicted_raw_files = np.unique(xr.open_zarr(target_dname).raw_file)
+                    selected_echs = list(list(set(predicted_raw_files) - set(selected_echs)) + list(set(predicted_raw_files) - set(selected_echs)))
+                    if len(selected_echs) == 0:
+                        print("Cannot resume predictions as no new raw files were detected")
+                        continue
 
-                if self.labels_available:
-                    print('NB! predict_zarr is not yet implemented with available labels')
-                    preds, labels = self.predict_zarr(zarr_reader=survey, sandeel_only=False)
-                else:
-                    preds = self.predict_zarr(zarr_reader=survey, sandeel_only=False)
+                for ii, ech in enumerate(selected_echs):
+                    print("[Step %d/%d]" % (ii+1, len(selected_echs)))
 
-                ds = _create_ds_predictions(survey, preds)
-                if ds is not None:
-                    # Re-chunk so that we have a full range in a chunk (zarr only)
-                    ds = ds.chunk({"range": ds.range.shape[0], "ping_time": 'auto'})
-
-                    compressor = Blosc(cname='zstd', clevel=3, shuffle=Blosc.BITSHUFFLE)
-                    encoding = {var: {"compressor": compressor} for var in ds.data_vars}
-                    if write_first_loop == False:
-                        ds.to_zarr(target_dname, append_dim="ping_time")
+                    if self.labels_available:
+                        preds, labels = self.predict_echogram(survey, ech, sandeel_only=False)
                     else:
-                        ds.to_zarr(target_dname, mode="w", encoding=encoding)
+                        preds = self.predict_echogram(survey, ech, sandeel_only=False)
+                    ech_name = ech
 
+                    ds = _create_ds_predictions(survey, preds, ech_name)
+
+                    if ds is not None:
+                        # Re-chunk so that we have a full range in a chunk (zarr only)
+                        ds = ds.chunk({"range": ds.range.shape[0], "ping_time": 'auto'})
+
+                        compressor = Blosc(cname='zstd', clevel=3, shuffle=Blosc.BITSHUFFLE)
+                        encoding = {var: {"compressor": compressor} for var in ds.data_vars}
+                        if write_first_loop == False:
+                            ds.to_zarr(target_dname, append_dim="ping_time")
+                        else:
+                            ds.to_zarr(target_dname, mode="w", encoding=encoding)
+
+                        write_first_loop = False
 
     def compute_and_plot_evaluation_metrics(self, selected_surveys=[], colors_list=[]):
         """
@@ -860,8 +758,8 @@ class SegPipe():
                     'Config option --dir_save_preds_label should not be None, i.e. provide a path to the directory for saving predictions and labels')
                 continue
             else:
-                for ii, ech in enumerate(selected_echograms):
-                    print("[Step %d/%d]" % (ii+1, len(selected_echograms)))
+                for ii, ech in tqdm(enumerate(selected_echograms), total=len(selected_echograms)):
+                    #print("[Step %d/%d]" % (ii+1, len(selected_echograms)))
                     if self.data_mode == 'zarr':
                         ech_name = ech.split('.raw')[0]
                     else:
@@ -967,6 +865,9 @@ class SegPipe():
                 fig_pr.tight_layout()
                 fig_roc.tight_layout()
                 if self.dir_savefig is not None:
+                    if not os.path.isdir(self.dir_savefig):
+                        os.makedirs(self.dir_savefig)
+
                     name_savefig = self.dir_savefig + 'pr_' + self.eval_mode + '_' + \
                                    self.path_model_params.split('/')[-1].split('.pt')[0]
                     name_savefig_roc = self.dir_savefig + 'roc_' + self.eval_mode + '_' + \
@@ -1053,12 +954,11 @@ class DataMemm():
     """ Object to represent memmap data features for the training-prediction pipeline """
     def __init__(self, opt):
         self.opt = opt
-        self.frequencies = opt.frequencies
-        if self.frequencies == 'all':
+        if opt.unit_frequency == 'kHz':
             self.frequencies = [18, 38, 120, 200]
-        if self.unit_frequency == 'Hz':
-            self.frequencies = [freq*1000 for freq in self.frequencies]
-        elif self.unit_frequency != 'kHz':
+        elif opt.unit_frequency == 'Hz':
+            self.frequencies = [18000, 38000, 120000, 200000]
+        else:
             print("unit_frequency should be 'Hz' or 'kHz'")
         self.window_dim = opt.window_dim
         self.window_size = [self.window_dim, self.window_dim]
@@ -1067,7 +967,7 @@ class DataMemm():
                                           mode=opt.data_mode)
 
     # Partition data into train, test, val
-    def partition_data(self, echograms, partition='random', portion_train=0.85):
+    def partition_data(self, partition='random', portion_train=0.85):
         """
         Choose partitioning of data
         :param echograms: list of echogram objects
@@ -1088,9 +988,9 @@ class DataMemm():
 
             # Set random seed to get the same partition every time
             np.random.seed(seed=10)
-            np.random.shuffle(echograms)
-            train = echograms[:int(portion_train * len(echograms))]
-            test = echograms[int(portion_train * len(echograms)):]
+            np.random.shuffle(self.echograms)
+            train = self.echograms[:int(portion_train * len(self.echograms))]
+            test = self.echograms[int(portion_train * len(self.echograms)):]
 
             # Reset random seed to generate random crops during training
             np.random.seed(seed=None)
@@ -1099,8 +999,8 @@ class DataMemm():
             # Partition by year of echogram
             train = list(filter(lambda x: any(
                 [year in x.name for year in
-                 ['D2011', 'D2012', 'D2013', 'D2014', 'D2015', 'D2016']]), echograms))
-            test = list(filter(lambda x: any([year in x.name for year in ['D2017']]), echograms))
+                 ['D2011', 'D2012', 'D2013', 'D2014', 'D2015', 'D2016']]), self.echograms))
+            test = list(filter(lambda x: any([year in x.name for year in ['D2017']]), self.echograms))
 
         elif partition == 'all surveys':
             # Partition by year of echogram
@@ -1108,15 +1008,15 @@ class DataMemm():
                 [year in x.name for year in
                  ['D2007', 'D2008', 'D2009', 'D2010',
                   'D2011', 'D2012', 'D2013', 'D2014', 'D2015', 'D2016',
-                  'D2017', 'D2018']]), echograms))
-            test = list(filter(lambda x: any([year in x.name for year in ['D2017']]), echograms))
+                  'D2017', 'D2018']]), self.echograms))
+            test = list(filter(lambda x: any([year in x.name for year in ['D2017']]), self.echograms))
 
         elif partition == 'single survey':
             # Partition by year of echogram
             train = list(filter(lambda x: any(
                 [year in x.name for year in
-                 ['D2017']]), echograms))
-            test = list(filter(lambda x: any([year in x.name for year in ['D2017']]), echograms))
+                 ['D2017']]), self.echograms))
+            test = list(filter(lambda x: any([year in x.name for year in ['D2017']]), self.echograms))
 
         else:
             print("Parameter 'partition' must equal 'random' or 'selected surveys' or 'single survey' or 'all surveys'")
@@ -1133,24 +1033,24 @@ class DataMemm():
         list of the samplers used to draw samples for validation and
         list of the sampling probabilities awarded to each of the samplers
         """
-        echograms_train, echograms_test = self.partition_data(self.echograms, self.partition)
+        echograms_train, echograms_test = self.partition_data(self.partition)
 
         samplers_train = [
             Background(echograms_train, self.window_size),
             Seabed(echograms_train, self.window_size),
-            School(echograms_train, 27),
-            School(echograms_train, 1),
-            SchoolSeabed(echograms_train, self.window_dim // 2, 27),
-            SchoolSeabed(echograms_train, self.window_dim // 2, 1)
+            School(echograms_train, window_size=self.window_size, fish_type=27),
+            School(echograms_train, window_size=self.window_size, fish_type=1),
+            SchoolSeabed(echograms_train, window_size=self.window_size, max_dist_to_seabed=self.window_dim // 2, fish_type=27),
+            SchoolSeabed(echograms_train, window_size=self.window_size, max_dist_to_seabed=self.window_dim // 2, fish_type=1)
         ]
 
         samplers_test = [
             Background(echograms_test, self.window_size),
             Seabed(echograms_test, self.window_size),
-            School(echograms_test, 27),
-            School(echograms_test, 1),
-            SchoolSeabed(echograms_test, self.window_dim // 2, 27),
-            SchoolSeabed(echograms_test, self.window_dim // 2, 1)
+            School(echograms_test, window_size=self.window_size, fish_type=27),
+            School(echograms_test, window_size=self.window_size, fish_type=1),
+            SchoolSeabed(echograms_test, window_size=self.window_size, max_dist_to_seabed=self.window_dim // 2, fish_type=27),
+            SchoolSeabed(echograms_test, window_size=self.window_size, max_dist_to_seabed=self.window_dim // 2, fish_type=1)
         ]
 
         sampler_probs = [1, 5, 5, 5, 5, 5]
@@ -1164,71 +1064,98 @@ class DataZarr():
     """ Object to represent zarr data features for the training-prediction pipeline """
     def __init__(self, opt):
         self.opt = opt
-        self.frequencies = opt.frequencies
-        if self.frequencies == 'all':
+        if opt.unit_frequency == 'kHz':
             self.frequencies = [18, 38, 120, 200]
-        if self.unit_frequency == 'Hz':
-            self.frequencies = [freq*1000 for freq in self.frequencies]
-        elif self.unit_frequency != 'kHz':
+        elif opt.unit_frequency == 'Hz':
+            self.frequencies = [18000, 38000, 120000, 200000]
+        else:
             print("unit_frequency should be 'Hz' or 'kHz'")
         self.window_dim = opt.window_dim
         self.window_size = [self.window_dim, self.window_dim]
         self.partition = opt.partition
-        self.echograms = get_data_readers(frequencies=self.frequencies, minimum_shape=self.window_dim,
+
+        # TODO minimum shape is currently not used in the selection of zarr files
+        self.zarr_readers = get_data_readers(frequencies=self.frequencies, minimum_shape=self.window_dim,
                                           mode=opt.data_mode)
 
+        self.train_surveys = opt.train_surveys
+        self.val_surveys = opt.val_surveys
+
     # Partition data into train, test, val
-    def partition_data(self, echograms, partition='single year'):
+    def partition_data(self, partition='single year', portion_train=0.85):
         """
         Choose partitioning of data
-
         Currently only the partition 'single survey' can be used, i.e. we train and validate on the same surveys
         This should be changed in the future when the training procedure changes according to the zarr pre-processed format
         """
 
-        if partition == 'single survey':
-            train = echograms
-            test = echograms
+        assert partition in ['random', 'selected surveys', 'single survey', 'all surveys'], \
+                "Parameter 'partition' must equal 'random' or 'selected surveys' or 'single survey' or 'all surveys'"
+
+        if partition == 'random':
+            # Random partition of all surveys
+
+            # Set random seed to get the same partition every time
+            np.random.seed(seed=10)
+            np.random.shuffle(self.zarr_readers)
+
+            train = self.zarr_readers[:int(portion_train * len(self.zarr_readers))]
+            test = self.zarr_readers[int(portion_train * len(self.zarr_readers)):]
+
+            # Reset random seed to generate random crops during training
+            np.random.seed(seed=None)
+        elif partition == 'single survey' or partition == 'selected surveys':
+            train = [survey for survey in self.zarr_readers if survey.year in self.train_surveys]
+            test = [survey for survey in self.zarr_readers if survey.year in self.val_surveys]
+        elif partition == 'all surveys':
+            train = [survey for survey in self.zarr_readers if survey.year in list(range(2007, 2019))]
+            test = [survey for survey in self.zarr_readers if survey.year == 2017] # use 2017 survey as test after training on all
         else:
-            print("Parameter 'partition' must be equal to 'single survey'")
+            print(
+                "Parameter 'partition' must equal 'random' or 'selected surveys' or 'single survey' or 'all surveys'")
 
         len_train = 0
+        n_pings_train = 0
         for ii in range(len(train)):
             len_train += len(train[ii].raw_file_included)
+            n_pings_train += train[ii].shape[0]
 
         len_test = 0
+        n_pings_test = 0
         for ii in range(len(test)):
             len_test += len(test[ii].raw_file_included)
-        print('Train:', len_train, ' Test:', len_test)
+            n_pings_test += test[ii].shape[0]
+
+        print('Train: {} surveys, {} raw files, {} pings\nTest: {} surveys, {} raw files {} pings'.
+              format(len(train), len_train, n_pings_train, len(test), len_test, n_pings_test))
 
         return train, test
 
     def sample_data(self):
         """
         Provides a list of the samplers used to draw samples for training and validation
-
         :return list of the samplers used to draw samples for training,
         list of the samplers used to draw samples for validation and
         list of the sampling probabilities awarded to each of the samplers
         """
-        echograms_train, echograms_test = self.partition_data(self.echograms, self.partition)
+        echograms_train, echograms_test = self.partition_data(self.partition)
 
         samplers_train = [
             BackgroundZarr(echograms_train, self.window_size),
             SeabedZarr(echograms_train, self.window_size),
-            SchoolZarr(echograms_train, 27),
-            SchoolZarr(echograms_train, 1),
-            SchoolSeabedZarr(echograms_train, self.window_dim // 2, 27),
-            SchoolSeabedZarr(echograms_train, self.window_dim // 2, 1)
+            SchoolZarr(echograms_train, window_size=self.window_size, fish_type=27),
+            SchoolZarr(echograms_train, window_size=self.window_size, fish_type=1),
+            SchoolSeabedZarr(echograms_train, window_size=self.window_size, max_dist_to_seabed=self.window_dim // 2, fish_type=27),
+            SchoolSeabedZarr(echograms_train, window_size=self.window_size, max_dist_to_seabed=self.window_dim // 2, fish_type=1)
         ]
 
         samplers_test = [
             BackgroundZarr(echograms_test, self.window_size),
             SeabedZarr(echograms_test, self.window_size),
-            SchoolZarr(echograms_test, 27),
-            SchoolZarr(echograms_test, 1),
-            SchoolSeabedZarr(echograms_test, self.window_dim // 2, 27),
-            SchoolSeabedZarr(echograms_test, self.window_dim // 2, 1)
+            SchoolZarr(echograms_test, window_size=self.window_size, fish_type=27),
+            SchoolZarr(echograms_test, window_size=self.window_size, fish_type=1),
+            SchoolSeabedZarr(echograms_test, window_size=self.window_size, max_dist_to_seabed=self.window_dim // 2, fish_type=27),
+            SchoolSeabedZarr(echograms_test, window_size=self.window_size, max_dist_to_seabed=self.window_dim // 2, fish_type=1)
         ]
 
         sampler_probs = [1, 5, 5, 5, 5, 5]
@@ -1237,6 +1164,7 @@ class DataZarr():
         assert len(sampler_probs) == len(samplers_test)
 
         return samplers_train, samplers_test, sampler_probs
+
 
 class Config_Options(object):
     """ Object to represent configuration options for the training-prediction pipeline """

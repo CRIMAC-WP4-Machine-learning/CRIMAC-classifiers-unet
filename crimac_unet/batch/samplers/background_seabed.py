@@ -24,7 +24,6 @@ from utils.np import getGrid, nearest_interpolation
 class BackgroundSeabed():
     def __init__(self, echograms, window_size):
         """
-
         :param echograms: A list of all echograms in set
         """
         self.echograms = echograms
@@ -33,7 +32,6 @@ class BackgroundSeabed():
 
     def get_sample(self):
         """
-
         :return: [(int) y-coordinate, (int) x-coordinate], (Echogram) selected echogram
         """
         #Random echogram
@@ -42,6 +40,9 @@ class BackgroundSeabed():
         #Random x-loc with y-location of seabed
         x = np.random.randint(self.window_size[1]//2, self.echograms[ei].shape[1] - (self.window_size[1]//2))
         y = self.echograms[ei].get_seabed()[x]
+
+        # "adjust" y so that seabed is not always in the middle of the crop
+        y += np.random.randint(-self.window_size[1]//2, self.window_size[1]//2 + 1)
 
         #Check if there is any fish-labels in crop
         grid = getGrid(self.window_size) + np.expand_dims(np.expand_dims([y,x], 1), 1)
@@ -65,22 +66,22 @@ class BackgroundSeabedZarr():
         # get random ping in zarr file
         x = np.random.randint(self.window_size[1] // 2, zarr_rand.shape[0] - self.window_size[1] // 2)
 
-        # Ensure that patch is inside one raw file/echogram
-        if len(np.unique(zarr_rand.raw_file[x - self.window_size[1] // 2:x + self.window_size[0]])) > 1:
-            return self.get_sample()  # if contains more than one echogram, draw new sample
+        # Get y-loc at seabed
+        y = int(zarr_rand.get_seabed(x))
 
-        # Get y-loc above seabed
-        y = int(zarr_rand.get_seabed()[x])
+        #y = seabed - self.window_size[0] // 2 if seabed - self.window_size[0] // 2 >= 0 else 0
+
+        # "adjust" y so that seabed is not always in the middle of the crop
+        y += np.random.randint(-self.window_size[1]//2, self.window_size[1]//2 + 1)
 
         # Check if any fish_labels in the crop
-        labels = zarr_rand.get_label_ping([x - self.window_size[1] // 2, x + self.window_size[0] // 2])
+        labels = zarr_rand.get_label_slice(idx_ping = x-self.window_size[1]//2,
+                                           n_pings=self.window_size[1],
+                                           idx_range=y,
+                                           n_range=self.window_size[0])
 
-        # "adjust" y
-        y0 = y - self.window_size[0] // 2 if y - self.window_size[0] // 2 >= 0 else 0
-        y1 = y + self.window_size[0] // 2 if y + self.window_size[0] // 2 < labels.shape[1] else labels.shape[1]
-
-        # Check if any fish-labels in crop
-        if np.any(labels[:, y0:y1] != 0):
+        if np.any(labels != 0): # Possible bottleneck
             return self.get_sample()
+
 
         return [x, y], zarr_rand
