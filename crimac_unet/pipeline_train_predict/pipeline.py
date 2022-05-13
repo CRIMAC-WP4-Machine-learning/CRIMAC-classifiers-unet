@@ -17,12 +17,10 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
 """
 
 import time
-import os
 import numpy as np
 import pickle
 import pandas as pd
 from sklearn.metrics import auc, roc_curve, precision_recall_curve
-from tqdm import tqdm
 
 import torch
 import torch.nn as nn
@@ -756,8 +754,8 @@ class SegPipe():
                     'Config option --dir_save_preds_label should not be None, i.e. provide a path to the directory for saving predictions and labels')
                 continue
             else:
-                for ii, ech in tqdm(enumerate(selected_echograms), total=len(selected_echograms)):
-                    #print("[Step %d/%d]" % (ii+1, len(selected_echograms)))
+                for ii, ech in enumerate(selected_echograms):
+                    print("[Step %d/%d]" % (ii+1, len(selected_echograms)))
                     if self.data_mode == 'zarr':
                         ech_name = ech.split('.raw')[0]
                     else:

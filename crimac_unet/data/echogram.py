@@ -34,8 +34,6 @@ from data.normalization import db
 from data.missing_korona_depth_measurements import depth_excluded_echograms
 from data_preprocessing.generate_heave_compensation_files import write_label_file_without_heave_correction_one_echogram
 
-from tqdm import tqdm
-
 # from utils.plotting import setup_matplotlib
 # plt = setup_matplotlib()
 # import matplotlib

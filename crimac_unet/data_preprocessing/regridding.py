@@ -82,7 +82,7 @@ def regrid_predictions(pred_path, save_path, model_name, regridded_range_diff=0.
         if os.path.isdir(os.path.join(*[pred_path, ech, model_name])):
             rel_echograms.append(ech)
 
-    for ech in tqdm(rel_echograms):
+    for ech in rel_echograms:
         # Load prediction
         pred = np.load(os.path.join(*[pred_path, ech, 'cons_regrid_rd_50cm_midy_nr1', 'pred.npy']))
 
@@ -348,7 +348,6 @@ def sanity_check(ech, expected_ping_rate=1):
 
 
 if __name__ == '__main__':
-    from tqdm import tqdm
     from utils.plotting import setup_matplotlib
 
     pred_path = "/nr/project/bild/Cogmar/usr/utseth/predictions/predictions"

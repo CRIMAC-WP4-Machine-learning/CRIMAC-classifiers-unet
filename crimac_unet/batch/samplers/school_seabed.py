@@ -17,7 +17,6 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
 """
 
 import numpy as np
-from tqdm import tqdm
 from batch.samplers.school import School
 
 
@@ -75,7 +74,7 @@ class SchoolSeabedZarr():
             bboxes = []
 
             # Filter on distance to seabed
-            for row in tqdm(all_bboxes, total=len(all_bboxes), desc=f'Finding near-seabed school boxes for {fish_type}'):
+            for row in all_bboxes:
 
                 mid_ping = int(np.mean(row[:2]))
                 seabed = zarr_file.get_seabed(mid_ping)

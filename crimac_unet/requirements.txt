@@ -47,7 +47,6 @@ torch==1.7.1
 torchaudio==0.7.0a0+a853dff
 torchvision==0.8.2
 tornado==6.1
-tqdm==4.56.0
 typing-extensions==3.7.4.3
 wheel==0.36.2
 xarray==0.17.0
