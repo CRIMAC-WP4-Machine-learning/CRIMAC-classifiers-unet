@@ -90,7 +90,7 @@ class SchoolZarr():
         for idx, zarr_file in enumerate(self.zarr_files):
             df = zarr_file.get_fish_schools(category=fish_type)
 
-            bboxes = df[['start_ping_idx', 'end_ping_idx', 'start_range_idx', 'end_range_idx']].values
+            bboxes = df[['startpingindex', 'endpingindex', 'upperdeptindex', 'lowerdeptindex']].values
 
             self.schools.append((zarr_file, bboxes))
             self.n_schools += bboxes.shape[0]

@@ -133,7 +133,6 @@ class SegPipe():
         """
 
         # TODO add tensorboard logger
-
         assert not os.path.exists(self.path_model_params), \
             'Attempting to train a model that already exists: ' + self.model_name + '\n' \
                                                                                     'Use a different model name or delete the model params file: ' + self.path_model_params
@@ -338,7 +337,7 @@ class SegPipe():
             if raw_file is None:
                 seabed = ech.get_seabed().copy()
             else:
-                seabed = ech.get_seabed(raw_file=raw_file).copy()
+                seabed = ech.get_seabed_rawfile(raw_file).copy()
             seabed += 10
             assert seabed.shape[0] == seg.shape[1]
             for x, y in enumerate(seabed):
@@ -716,9 +715,8 @@ class SegPipe():
             if self.data_mode == 'zarr':
                 surveys_list = []
                 for survey in self.echograms:
-                    for selected_survey in selected_surveys:
-                        if survey.name == selected_survey:
-                            surveys_list.append(survey)
+                    if survey.year in selected_surveys:
+                        surveys_list.append(survey)
             else:
                 surveys_list = selected_surveys
             color_survey = dict(zip(
@@ -1099,7 +1097,6 @@ class DataZarr():
             np.random.seed(seed=10)
             np.random.shuffle(self.zarr_readers)
 
-
             train = self.zarr_readers[:int(portion_train * len(self.zarr_readers))]
             test = self.zarr_readers[int(portion_train * len(self.zarr_readers)):]
 
@@ -1146,8 +1143,8 @@ class DataZarr():
             SeabedZarr(echograms_train, self.window_size),
             SchoolZarr(echograms_train, self.window_size, 27),
             SchoolZarr(echograms_train,  self.window_size, 1),
-            SchoolSeabedZarr(echograms_train, max_dist_to_seabed=self.window_size[0]//2, fish_type=27),
-            SchoolSeabedZarr(echograms_train, max_dist_to_seabed=self.window_size[0]//2, fish_type=1)
+            SchoolSeabedZarr(echograms_train, self.window_size, max_dist_to_seabed=self.window_size[0]//2, fish_type=27),
+            SchoolSeabedZarr(echograms_train, self.window_size, max_dist_to_seabed=self.window_size[0]//2, fish_type=1)
         ]
 
         samplers_test = [
@@ -1155,8 +1152,8 @@ class DataZarr():
             SeabedZarr(echograms_test, self.window_size),
             SchoolZarr(echograms_test, self.window_size, 27),
             SchoolZarr(echograms_test, self.window_size, 1),
-            SchoolSeabedZarr(echograms_test, max_dist_to_seabed=self.window_size[0]//2, fish_type=27),
-            SchoolSeabedZarr(echograms_test, max_dist_to_seabed=self.window_size[0]//2, fish_type=1)
+            SchoolSeabedZarr(echograms_test, self.window_size, max_dist_to_seabed=self.window_size[0]//2, fish_type=27),
+            SchoolSeabedZarr(echograms_test, self.window_size, max_dist_to_seabed=self.window_size[0]//2, fish_type=1)
         ]
 
         sampler_probs = [1, 5, 5, 5, 5, 5]

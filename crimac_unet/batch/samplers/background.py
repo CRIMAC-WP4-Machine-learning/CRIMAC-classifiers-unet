@@ -71,7 +71,6 @@ class BackgroundZarr():
 
         # Get y-loc above seabed
         seabed = int(zarr_rand.get_seabed(x))
-
         y = np.random.randint(0, seabed-self.window_size[0]//2)
 
         # Check if any fish_labels in the crop
@@ -80,7 +79,7 @@ class BackgroundZarr():
                                            idx_range=y-self.window_size[0]//2,
                                            n_range=self.window_size[0],
                                            drop_na=False,
-                                           return_numpy=False)
+                                           return_numpy=True)
 
         # Check if any fish-labels in crop
         if (labels > 0).any() or (labels == -1).all(): # Possible bottleneck?

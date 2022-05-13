@@ -17,7 +17,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
 """
 
 import numpy as np
-
+from tqdm import tqdm
 from batch.samplers.school import School
 
 
@@ -71,11 +71,20 @@ class SchoolSeabedZarr():
         for idx, zarr_file in enumerate(self.zarr_files):
             df = zarr_file.get_fish_schools(category=fish_type)
 
-            # Filter on distance to seabed
-            df = df.loc[df.distance_to_seabed < max_dist_to_seabed]
-            bboxes = df[['start_ping_idx', 'end_ping_idx', 'start_range_idx', 'end_range_idx']].values
+            all_bboxes = df[['startpingindex', 'endpingindex', 'upperdeptindex', 'lowerdeptindex']].values
+            bboxes = []
 
-            self.schools.append((zarr_file, bboxes))  # object id is not needed
+            # Filter on distance to seabed
+            for row in tqdm(all_bboxes, total=len(all_bboxes), desc=f'Finding near-seabed school boxes for {fish_type}'):
+
+                mid_ping = int(np.mean(row[:2]))
+                seabed = zarr_file.get_seabed(mid_ping)
+                dist_seabed = seabed - row[-1]
+
+                if dist_seabed < max_dist_to_seabed:
+                    bboxes.append(row)
+
+            self.schools.append((zarr_file, np.array(bboxes)))  # object id is not needed
 
 
     def get_sample(self):

@@ -1,10 +1,9 @@
 import os
-import numpy as np
 
 from data.echogram import DataReaderZarr
 
 if __name__ == '__main__':
-    data_path = "C:\\Users\\utseth\\Documents\\Projects\\COGMAR\\Data\\S2918847_0511\\S2019847_0511_sv.zarr"
+    data_path = ""
 
     assert os.path.isdir(data_path)
 
@@ -24,16 +23,17 @@ if __name__ == '__main__':
     print(f"Survey start time: {reader.time_vector[0].values}")
     print(f"Survey end time: {reader.time_vector[-1].values}")
 
-
     # Visualize 2000 random pings in the data
-    #reader.visualize(range_idx=50, draw_seabed=False)
+    reader.visualize(range_idx=50, draw_seabed=False)
 
     # Visualize data with fish school
-    row = objects_df.query('(category == 27)').sample(n=1)
-    start_ping_idx = int(row.start_ping_idx)
-    end_ping_idx = int(row.end_ping_idx)
-    start_range_idx = int(row.start_range_idx)
-    end_range_idx = int(row.end_range_idx)
+    row = objects_df.query('(category == 27)').sample(n=1) # Sample a random sandeel fish school
+
+    # extranct the bounding box
+    start_ping_idx = int(row.startpingindex)
+    end_ping_idx = int(row.endpingindex)
+    start_range_idx = int(row.upperdeptindex)
+    end_range_idx = int(row.lowerdeptindex)
 
 
     reader.visualize(ping_idx=start_ping_idx - 50,

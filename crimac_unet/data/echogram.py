@@ -475,8 +475,6 @@ class DataReaderZarr():
 
         self.raw_file = self.ds.raw_file  # List of raw files, length = nr of pings
         self.raw_file_included = np.unique(self.ds.raw_file.values)  # list of unique raw files contained in zarr file
-        self.raw_file_excluded = []
-        self.raw_file_start = None
 
         # Used for seabed estimation
         transducer_offset = self.ds.transducer_draft.mean()
@@ -502,8 +500,7 @@ class DataReaderZarr():
         # Load objects list
         self.objects_df = None
         if os.path.isfile(self.objects_df_path):# and os.path.isfile(self.work_path):
-            self.objects_df = pd.read_csv(self.objects_df_path, names=['UniqueID', 'objectID', 'LSSSID', 'category', 'start_ping', 'end_ping',
-                                                                        'start_ping_idx', 'end_ping_idx', 'start_range_idx', 'end_range_idx'], index_col=None)
+            self.objects_df = pd.read_csv(self.objects_df_path, index_col=None)
 
     def get_ping_index(self, ping_time):
         """
@@ -526,102 +523,17 @@ class DataReaderZarr():
         :param category: Categories to include ('all', or list)
         :return: dataframe with bounding boxes
         """
-        df = self.objects_df
+        if self.objects_df is None:
+            raise FileNotFoundError(f'No objects file at {self.objects_df_path}')
+
+
         if category == 'all':
             category = self.fish_categories
 
         if not isinstance(category, (list, np.ndarray)):
             category = [category]
 
-        return df.loc[df.category.isin(category)]
-
-    def get_objects_file(self):
-        """
-        Get or compute dataframe with bounding box indexes for all fish schools
-        :return: Pandas dataframe with object info and bounding boxes
-        """
-        if self.objects_df is not None:
-            return self.objects_df
-
-        parsed_objects_file_path = os.path.join(os.path.split(self.objects_df_path)[0],
-                                                self.name + '_objects_parsed.csv')
-
-        if os.path.isfile(parsed_objects_file_path):
-            return pd.read_csv(parsed_objects_file_path, index_col=0)
-        elif os.path.isfile(self.objects_df_path) and os.path.isfile(self.work_path):
-
-            # Create parsed objects file from object file and work file
-            df = pd.read_csv(self.objects_df_path, names=['object', 'category', 'start_ping', 'end_ping', 'start_range', 'end_range'])
-
-            # Extract only fish school/layers
-            df = df.loc[df.category.isin(self.fish_categories)].reset_index(drop=True)
-            work_df = pd.read_parquet(self.work_path)
-
-            # Parse dataframe
-            df['object_id'] = [int(obj.split('__')[0]) for obj in df['object'].values]
-            df['object_name'] = [obj.split('__')[1] for obj in df['object'].values]
-            df['object_type'] = [obj.split('__')[1].split('-')[0] for obj in df['object'].values]
-            df['LSS_object_id'] = [int(obj.split('-')[-1]) for obj in df['object'].values]
-
-            # Converting the necessary columns to numpy arrays speeds up the process, though it looks messy
-            start_pings = pd.to_datetime(df.start_ping).to_numpy()  # convert columns to datetime
-            end_pings = pd.to_datetime(df.end_ping).to_numpy()
-            df_object_id = df.object_name.values
-            df_category = df.category.to_numpy().astype(np.int16)
-
-            parquet_ping_times = work_df.ping_time.to_numpy()
-            parquet_mask_depth_upper = work_df.mask_depth_upper.to_numpy()
-            parquet_mask_depth_lower = work_df.mask_depth_lower.to_numpy()
-            parquet_object_id = work_df.object_id.to_numpy()
-
-            # get range values
-            assert len(df['object_id']) == len(df), print('Object IDs not unique!')
-            #
-            for idx, (start_ping, end_ping, obj_name, obj_category) in \
-                tqdm(enumerate(zip(start_pings, end_pings, df_object_id, df_category)), total=len(start_pings)):
-
-                start_ping_idx = int(self.get_ping_index(np.datetime64(start_ping)))
-                end_ping_idx = int(self.get_ping_index(np.datetime64(end_ping)))
-
-                df.loc[idx, 'start_ping_idx'] = int(start_ping_idx)
-                df.loc[idx, 'end_ping_idx'] = int(end_ping_idx)
-
-                # Skip objects with ping errors og of category -1
-                # TODO better solution for this? Fix ping errors?
-                if start_ping > end_ping or obj_category == -1:
-                    df.loc[idx, 'valid_object'] = False
-                    continue
-
-                # Get range from the parquet file -> assume only one object with
-                mask = (parquet_ping_times >= start_ping) & (parquet_ping_times <= end_ping) & (
-                        parquet_object_id == obj_name)
-
-                mask_depth_upper = min(np.unique(parquet_mask_depth_upper[mask]))
-                mask_depth_lower = max(np.unique(parquet_mask_depth_lower[mask]))
-
-                # Add min and max object depth in m
-                df.loc[idx, 'mask_depth_upper'] = float(mask_depth_upper)
-                df.loc[idx, 'mask_depth_lower'] = float(mask_depth_lower)
-
-                # Add min and max object depth index
-                start_range_idx = int(self.get_range_index(float(mask_depth_upper)))
-                end_range_idx = int(self.get_range_index(float(mask_depth_lower)))
-                df.loc[idx, 'start_range_idx'] = start_range_idx
-                df.loc[idx, 'end_range_idx'] = end_range_idx
-
-                # Add distance to seabed
-                if os.path.isdir(self.seabed_path):
-                    center_ping_idx = start_ping_idx + int((end_ping_idx - start_ping_idx)/2)
-                    df.loc[idx, 'distance_to_seabed'] = self.get_seabed(center_ping_idx) - end_range_idx
-
-                df.loc[idx, 'valid_object'] = True
-
-            # Save parsed objecs file
-            df.to_csv(parsed_objects_file_path)
-            return df
-        else:
-            # Cannot return object file
-            raise FileNotFoundError(f'Cannot compute objects dataframe from {self.objects_df_path} and {self.work_path}')
+        return self.objects_df.loc[self.objects_df.category.isin(category)]
 
     def get_data_slice(self, idx_ping: (int, None) = None, n_pings: (int, None) = None, idx_range: (int, None) = None, n_range: (int, None) = None,
                   frequencies: (int, list, None) = None, drop_na=False, return_numpy=True):
@@ -677,8 +589,8 @@ class DataReaderZarr():
             return data
 
     def get_label_slice(self, idx_ping: int, n_pings: int, idx_range: (int, None) = None, n_range: (int, None) = None,
-                        drop_na=False, categories=None, return_numpy=True, correct_transducer_offset=False,
-                        mask=True):
+                        drop_na=False, categories=None, return_numpy=True,
+                        mask=True, ignore=False):
         """
         Get slice of labels
         :param idx_ping: (int) Index of start ping
@@ -696,16 +608,11 @@ class DataReaderZarr():
         slice_ping_time = slice(idx_ping, idx_ping + n_pings)
 
         if idx_range is None:
-            idx_range = self.transducer_offset_pixels
-
-        if correct_transducer_offset:
-            idx_range += self.transducer_offset_pixels
-
-        if n_range is None:
+            slice_range = slice(None, n_range)  # Valid for n_range int, None
+        elif n_range is None:
             slice_range = slice(idx_range, None)
         else:
-            slice_range = slice(idx_range,
-                                idx_range + n_range)
+            slice_range = slice(idx_range, idx_range + n_range)
 
         # Convert labels from set of binary masks to 2D segmentation mask
         if categories is None:
@@ -715,7 +622,10 @@ class DataReaderZarr():
         label_slice = self.labels.isel(ping_time=slice_ping_time, range=slice_range)
 
         if mask:
-            labels = label_slice.sel(category=-1)
+            if ignore:
+                labels = label_slice.sel(category=-1)
+            else:
+                labels = xr.zeros_like(label_slice.sel(category=-1))
 
             #labels = self.labels.sel(category=categories[0]).isel(ping_time=slice_ping_time, range=slice_range) * categories[0]
             for cat in categories:
@@ -733,7 +643,6 @@ class DataReaderZarr():
             return labels.values
         else:
             return labels
-
 
     def get_seabed_mask(self, idx_ping: int, n_pings: int, idx_range: (int, None) = None, n_range: (int, None) = None,
                         return_numpy=True, correct_transducer_offset=True):
@@ -796,7 +705,29 @@ class DataReaderZarr():
             else:
                 seabed[i] = np.min(range_idxs[ping_idxs == i])
 
-        return seabed
+        return seabed.astype(int)
+
+    def get_rawfile_index(self, rawfile):
+        relevant_pings = np.argwhere(self.raw_file.values == rawfile).ravel()
+        start_ping = relevant_pings[0]
+        n_pings = len(relevant_pings)
+        return start_ping, n_pings
+
+    # These two functions are (currently) necessary to predict on zarr-data
+    def get_data_rawfile(self, rawfile, frequencies, drop_na):
+        start_ping, n_pings = self.get_rawfile_index(rawfile)
+
+        return self.get_data_slice(idx_ping=start_ping, n_pings=n_pings, frequencies=frequencies, drop_na=drop_na, return_numpy=True)
+
+    def get_labels_rawfile(self, rawfile):
+        start_ping, n_pings = self.get_rawfile_index(rawfile)
+
+        return self.get_label_slice(idx_ping=start_ping, n_pings=n_pings, return_numpy=True)
+
+    def get_seabed_rawfile(self, rawfile):
+        start_ping, n_pings = self.get_rawfile_index(rawfile)
+
+        return self.get_seabed(idx_ping=start_ping, n_pings=n_pings)
 
     def visualize(self,
                   ping_idx=None,
@@ -1009,8 +940,7 @@ def get_zarr_files(years, frequencies=[18, 38, 120, 200], minimum_shape=256, pat
     if path_to_zarr_files is None:
         path_to_zarr_files = paths.path_to_zarr_files()
 
-    zarr_files = sorted([z_file for z_file in glob(path_to_zarr_files+'/**/*.zarr', recursive=True) if ('annot' not in z_file
-                         and 'db' not in z_file)])
+    zarr_files = sorted([z_file for z_file in glob(path_to_zarr_files+'/**/*sv.zarr', recursive=True)])
     zarr_readers = [DataReaderZarr(zarr_file) for zarr_file in zarr_files]
 
     # Filter on frequencies
