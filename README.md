@@ -88,3 +88,43 @@ The results will be saved to disk (possibility to use path_for_saving_figs indic
 NB: The training procedure is not yet adjusted to the pre-processed 'zarr' data 
 since the format of the labels may continue changing and sampling the data for training depends on this.
 
+# Using docker for predictions
+
+The predictions can be run from docker.
+
+## Options to run
+
+1. Four directories need to be mounted:
+
+    1. `/datain` should be mounted to the data directory where the preprocessed data files are located.
+    2. `/model` modelweights
+    3. `/dataout` should be mounted to the directory where the zarr prediction masks are written.
+
+2. Select model weights file name
+
+    ```bash
+    --env MODELWEIGTS=regriddingPaper_v1_baseline.pt
+    ```
+
+## Example
+
+```bash
+export SURVEY='S2019847'
+export DATAIN='/localscratch_hdd/crimac'
+export DATAFILE='/2019/S2019847_0511/ACOUSTIC/GRIDDED/S2019847_0511_sv.zarr'
+export MODELWEIGTS='regriddingPaper_v1_baseline.pt'
+
+docker run --pgus all -it --rm --name unetpredictions:latest
+-v "/localscratch_hdd/crimac/":/datain
+-v "/localscratch_hdd/nilsolav/modelweights":/model
+-v "/localscratch_hdd/nilsolav/"/:/dataout
+--security-opt label=disable
+--env DATA_INPUT_NAME="${SURVEY}_sv.zarr"
+--env PRED_OUTPUT_NAME="${SURVEY}_labels_2.zarr"
+unetprediction
+
+```
+
+```bash
+docker run -rm -it --name reportgenerator -v "$SURVEYDIR/ACOUSTIC/GRIDDED":/datain -v "$SURVEYDIR/ACOUSTIC/GRIDDED":/predin -v "$TMPSURVEY/ACOUSTIC/REPORTS"/:/dataout --security-opt label=disable --env DATA_INPUT_NAME="${SURVEY}_sv.zarr" --env PRED_INPUT_NAME="${SURVEY}_labels.zarr" --env OUTPUT_NAME="${SURVEY}_report_0.zarr" --env WRITE_PNG="${SURVEY}_report_0.png" --env THRESHOLD=0.8 --env MAIN_FREQ=38000 --env MAX_RANGE_SRC=500 --env HOR_INTEGRATION_TYPE=ping --env HOR_INTEGRATION_STEP=100 --env VERT_INTEGRATION_TYPE=range --env VERT_INTEGRATION_STEP=10 reportgenerator
+```
