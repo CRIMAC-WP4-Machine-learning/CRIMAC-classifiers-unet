@@ -20,12 +20,13 @@ import numpy as np
 
 from utils.np import getGrid, linear_interpolation, nearest_interpolation
 from data.echogram import Echogram, DataReaderZarr
-from torchvision import transforms
+import torch
+
 
 class Dataset():
 
     def __init__(self, samplers, window_size, frequencies,
-                 n_samples=1000,
+                 n_samples = 1000,
                  sampler_probs=None,
                  augmentation_function=None,
                  label_transform_function=None,
@@ -59,18 +60,14 @@ class Dataset():
         self.sampler_probs /= np.max(self.sampler_probs)
 
     def __getitem__(self, index):
-        # Select which sampler to use
+        #Select which sampler to use
         i = np.random.rand()
         sampler = self.samplers[np.where(i < self.sampler_probs)[0][0]]
 
-        # Draw coordinate and echogram with sampler
+        #Draw coordinate and echogram with sampler
         center_location, echogram = sampler.get_sample()
 
-        # Adjust coordinate by random shift in y and x direction
-        center_location[0] += np.random.randint(-self.window_size[0] // 2, self.window_size[0] // 2 + 1)
-        center_location[1] += np.random.randint(-self.window_size[1] // 2, self.window_size[1] // 2 + 1)
-
-        # Get data/labels-patches
+        #Get data/labels-patches
         data, labels = get_crop(echogram, center_location, self.window_size, self.frequencies)
 
         # Apply augmentation
@@ -92,10 +89,12 @@ class Dataset():
         return self.n_samples
 
 def get_crop(reader, center_location, window_size, freqs):
-    if isinstance(reader, Echogram):
+    if reader.data_format == 'memmap':
         return get_crop_memmap(reader, center_location, window_size, freqs)
-    elif isinstance(reader, DataReaderZarr):
+    elif reader.data_format == 'zarr':
         return get_crop_zarr(reader, center_location, window_size, freqs)
+    else:
+        raise TypeError(f"Reader {type(reader)} unknown")
 
 def get_crop_memmap(echogram, center_location, window_size, freqs):
     """
@@ -126,39 +125,36 @@ def get_crop_memmap(echogram, center_location, window_size, freqs):
 
 def get_crop_zarr(zarr_file, center_loc, window_size, freqs):
     # Initialize output arrays
+    boundary_val_data = 0
+    boundary_val_label = -100
+    out_data = np.ones(shape=(len(freqs), window_size[0], window_size[1]))*boundary_val_data
+    out_labels = np.ones(shape=(window_size[0], window_size[1]))*boundary_val_label
 
-    # Get corner indexes
-    x0, x1 = (center_loc[0] - window_size[0] // 2, center_loc[0] + window_size[0] // 2)
-    y0, y1 = (center_loc[1] - window_size[1] // 2, center_loc[1] + window_size[1] // 2)
+    x0, x1 = (int(center_loc[0]) - window_size[0] // 2, int(center_loc[0]) + window_size[0] // 2)
+    y0, y1 = (int(center_loc[1]) - window_size[1] // 2, int(center_loc[1]) + window_size[1] // 2)
 
-    # Get data selection in ping_range
-    # Handle cases where y0 < 0 or x0 <0:
-    if y0 < 0:
-        y0 = 0
-    if x0 < 0:
-        x0 = 0
-    channels = zarr_file.get_data_ping_range((x0, x1), (y0, y1), frequencies=freqs, drop_na=True)
-    labels = zarr_file.get_label_ping_range((x0, x1), (y0, y1), drop_na=True)
+    # get data
+    zarr_crop_x = (max(x0, 0), min(zarr_file.shape[0], x1))
+    zarr_crop_y = (max(y0, 0), min(zarr_file.shape[1], y1))
 
-    # Get grid sampled around center_location
-    grid = getGrid(window_size) + np.expand_dims(np.expand_dims([window_size[0] // 2, center_loc[1]], 1), 1)
+    #channels = np.array(zarr_file.get_data_ping_range(zarr_crop_x, zarr_crop_y, frequencies=freqs, drop_na=False))
+    channels = zarr_file.get_data_slice(idx_ping=zarr_crop_x[0], n_pings=zarr_crop_x[1] - zarr_crop_x[0],
+                                        idx_range=zarr_crop_y[0], n_range=zarr_crop_y[1] - zarr_crop_y[0],
+                                        frequencies=freqs,
+                                        drop_na=False,
+                                        return_numpy=True)
 
-    channels_out = []
-    for ii in range(len(freqs)):
+    labels = zarr_file.get_label_slice(idx_ping=zarr_crop_x[0], n_pings=zarr_crop_x[1] - zarr_crop_x[0],
+                                       idx_range=zarr_crop_y[0], n_range=zarr_crop_y[1] - zarr_crop_y[0],
+                                       drop_na=False,
+                                       return_numpy=True)
 
-        # Interpolate data onto grid
-        xr_data = channels.values[ii, :, :]
-        data = linear_interpolation(xr_data, grid, boundary_val=0, out_shape=window_size)
-        del xr_data
+    # add to crop
+    crop = [zarr_crop_x[0]-x0, window_size[0]-(x1-zarr_crop_x[1]),
+            zarr_crop_y[0]-y0, window_size[1]-(y1-zarr_crop_y[1])]
 
-        # Set non-finite values (nan, positive inf, negative inf) to zero
-        if np.any(np.invert(np.isfinite(data))):
-            data[np.invert(np.isfinite(data))] = 0
+    # outputshape freqs, y, x
+    out_data[:, crop[2]:crop[3], crop[0]:crop[1]] = np.nan_to_num(channels.swapaxes(1, 2), nan=boundary_val_data)
+    out_labels[crop[2]:crop[3], crop[0]:crop[1]] = np.nan_to_num(labels.T, nan=boundary_val_label)
 
-        channels_out.append(np.expand_dims(data, 0))
-    channels_out = np.concatenate(channels_out, 0)
-
-    labels_out = nearest_interpolation(labels.values, grid, boundary_val=-100, out_shape=window_size)
-
-    # Transpose to match memmap
-    return channels_out.swapaxes(1, 2), labels_out.T
+    return out_data, out_labels

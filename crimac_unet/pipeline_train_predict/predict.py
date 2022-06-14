@@ -30,12 +30,7 @@ if __name__ == '__main__':
     opt = Config_Options(configuration)
 
     segpipe = SegPipeUNet(opt)
-    if opt.unit_frequency == 'kHz':
-        frequencies = [18, 38, 120, 200]
-    elif opt.unit_frequency == 'Hz':
-        frequencies = [18000, 38000, 120000, 200000]
-    else:
-        print("unit_frequency should be 'Hz' or 'kHz'")
+    frequencies = segpipe.frequencies
 
     ## Zarr prediction
     if opt.data_mode == 'zarr':

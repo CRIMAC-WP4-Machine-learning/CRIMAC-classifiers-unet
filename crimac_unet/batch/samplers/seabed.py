@@ -17,29 +17,30 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
 """
 
 import numpy as np
+import time
 
 
 class Seabed():
     def __init__(self, echograms, window_size):
         """
-
         :param echograms: A list of all echograms in set
         """
         self.echograms = echograms
         self.window_size = window_size
 
-
     def get_sample(self):
         """
-
         :return: [(int) y-coordinate, (int) x-coordinate], (Echogram) selected echogram
         """
-        #Random echogram
+        # Random echogram
         ei = np.random.randint(len(self.echograms))
 
-        #Random x-loc
+        # Random x-loc
         x = np.random.randint(self.window_size[1]//2, self.echograms[ei].shape[1] - (self.window_size[1]//2))
         y = self.echograms[ei].get_seabed()[x] + np.random.randint(-self.window_size[0], self.window_size[0])
+
+        # "adjust" y so that seabed is not always in the middle of the crop
+        y += np.random.randint(-self.window_size[1]//2, self.window_size[1]//2 + 1)
 
         # Correct y if window is not inside echogram
         if y < self.window_size[0]//2:
@@ -59,21 +60,13 @@ class SeabedZarr():
         # Get random zarr file
         zarr_rand = np.random.choice(self.zarr_files)
 
-        # Get random ping in zarr file
+        # get random ping in zarr file
         x = np.random.randint(self.window_size[1] // 2, zarr_rand.shape[0] - self.window_size[1] // 2)
 
-        # Ensure that patch is inside one raw file/echogram
-        if len(np.unique(zarr_rand.raw_file[x - self.window_size[1] // 2:x + self.window_size[0]])) > 1:
-            return self.get_sample()  # if contains more than one echogram, draw new sample
+        # Get y-loc at seabed
+        y = int(zarr_rand.get_seabed(x))
 
-        # select y location at seabed, and adjust
-        y = int(zarr_rand.get_seabed()[x]) + np.random.randint(-self.window_size[0], self.window_size[0])
-
-        # Ensure that y is inside rawfile
-        labels = zarr_rand.get_label_ping([x - self.window_size[1] // 2, x + self.window_size[0] // 2])
-        if y < self.window_size[0] // 2:
-            y = self.window_size[0] // 2
-        if y > labels.shape[1] - self.window_size[0] // 2:
-            y = labels.shape[1] - self.window_size[0] // 2
+        # "adjust" y so that seabed is not always in the middle of the crop
+        y += np.random.randint(-self.window_size[1]//2, self.window_size[1]//2 + 1)
 
         return [x, y], zarr_rand

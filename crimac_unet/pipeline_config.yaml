@@ -4,8 +4,10 @@
 data_mode: 'zarr'
 # Frequency unit (Options: Hz or KHz)
 unit_frequency: 'Hz'
+# Frequencies used for training and predictions
+frequencies: [18, 38, 120, 200]
 # Cuda device id (default: 0) if not available cpu is used
-dev: 3
+dev: 2
 # Number of data loading workers (default: 10)
 num_workers: 10
 # The height / width of the input image patch to network (default: 256)
@@ -25,9 +27,12 @@ log_step: 1000
 # Number of batches to wait before updating learning rate (default: 1000)
 lr_step: 1000
 # Number of training batches (default: 10000)
-iterations: 10000
+iterations: 500
 # Partitioning of training data (Options: random, selected surveys, single survey, all surveys - default: 'all surveys')
-partition: 'selected_surveys'
+partition: 'selected surveys'
+# If partition is selected_surveys, used this partition during training
+train_surveys: [2011, 2012, 2013, 2014, 2015, 2016]
+val_surveys: [2017]
 # Whether to use save the trained model
 save_model_params: True
 
@@ -38,11 +43,11 @@ eval_mode: 'all'
 # Partitioning of the data for the inference (Options: selected surveys, single survey, all surveys - default: 'all surveys')
 partition_predict: 'selected surveys'
 # List with the names of the selected survey
-selected_surveys: ['S2017843D20170513', 'S2017843D20170513T081028']
+selected_surveys: ['S2019847']
 # List with strings referring to colors
 colors_list: []
 # Whether to save the labels
-save_labels: False
+save_labels: True
 # Whether the labels are available
 labels_available: True
 # Whether to resume writing zarr predictions for a survey

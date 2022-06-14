@@ -24,20 +24,23 @@ import matplotlib.colors as mcolors
 from scipy.signal import convolve2d as conv2d
 import xarray as xr
 import pandas as pd
+from glob import glob
+import time
+import dask
+import csv
 
 import paths
 from data.normalization import db
 from data.missing_korona_depth_measurements import depth_excluded_echograms
 from data_preprocessing.generate_heave_compensation_files import write_label_file_without_heave_correction_one_echogram
 
-from tqdm import tqdm
-
-#from utils.plotting import setup_matplotlib
-#plt = setup_matplotlib()
+# from utils.plotting import setup_matplotlib
+# plt = setup_matplotlib()
 # import matplotlib
 # matplotlib.use('tkagg')
 #
 import matplotlib.pyplot as plt
+
 
 class Echogram():
     """ Object to represent a echogram """
@@ -76,6 +79,8 @@ class Echogram():
             if label not in self.object_ids_with_label.keys():
                 self.object_ids_with_label[label] = []
             self.object_ids_with_label[label].append(object_id)
+
+        self.data_format = 'memmap'
 
 
     def visualize(self,
@@ -369,13 +374,11 @@ class Echogram():
 
         if self._seabed is not None and not ignore_saved:
             return self._seabed
-
-        # elif os.path.isfile(os.path.join(self.path, 'seabed.npy')) and not ignore_saved:
-        #     self._seabed = np.load(os.path.join(self.path, 'seabed.npy'))
-        #     return self._seabed
+        elif os.path.isfile(os.path.join(self.path, 'seabed.npy')) and not ignore_saved:
+            self._seabed = np.load(os.path.join(self.path, 'seabed.npy'))
+            return self._seabed
 
         else:
-
             def set_non_finite_values_to_zero(input):
                 input[np.invert(np.isfinite(input))] = 0
                 return input
@@ -442,450 +445,397 @@ class DataReaderZarr():
     Data reader for zarr files. Expectation is that the zarr file contains data from one year only
     """
 
-    def __init__(self, path):
-        data = xr.open_zarr(path, chunks={'frequency': 'auto'})
-        self.ds = xr.Dataset(data)
+    def __init__(self, path, verbose=False):
+        # Load data
+        self.ds = xr.open_zarr(path, chunks={'frequency': 'auto'})
 
-        self.path = path
-        self.name = os.path.split(path)[-1].split('.')[0]
+        # Paths to other files
+        self.path = os.path.abspath(path)
+        self.name = os.path.basename(self.path).split('.')[0].replace('_sv', '')
+
+        self.annotation_path = os.path.join(os.path.split(self.path)[0], f'{self.name}_labels.zarr')
+        self.seabed_path = os.path.join(os.path.split(self.path)[0], f'{self.name}_bottom.zarr')
+        self.work_path = os.path.join(os.path.split(self.path)[0], f'{self.name}_labels.parquet')
+        self.objects_df_path = os.path.join(os.path.split(self.path)[0], f'{self.name}_labels.parquet.csv')
+        self.data_format = 'zarr'
 
         # Coordinates
-        self.frequencies = self.ds.frequency
+        self.frequencies = self.ds.frequency.astype(np.int)
+        self.heave = self.ds.heave
         self.channel_id = self.ds.get('channelID')
         self.latitude = self.ds.get('latitude')
         self.longitude = self.ds.get('longitude')
         self.range_vector = self.ds.range
         self.time_vector = self.ds.ping_time
+        self.year = int(self.ds.ping_time[0].dt.year)
+        self.date_range = (self.ds.ping_time[0], self.ds.ping_time[-1])
         self.shape = (self.ds.sizes['ping_time'], self.ds.sizes['range'])
 
         self.raw_file = self.ds.raw_file  # List of raw files, length = nr of pings
         self.raw_file_included = np.unique(self.ds.raw_file.values)  # list of unique raw files contained in zarr file
-        self.raw_file_excluded = []
-        self.raw_file_start = None
 
-        # data variables
-        self.heave = self.ds.heave
+        # Used for seabed estimation
+        transducer_offset = self.ds.transducer_draft.mean()
+        self.transducer_offset_pixels = int(transducer_offset/(self.range_vector.diff(dim='range').mean()).values)
 
-        self.year = int(self.ds.ping_time[0].dt.year)
-        self.date_range = (self.ds.ping_time[0], self.ds.ping_time[-1])
+        # load annotations files
+        self.annot = None
+        if os.path.isdir(self.annotation_path):
+            self.annot = xr.open_zarr(self.annotation_path)
+            self.labels = self.annot.annotation
+            self.objects = self.annot.object
 
-        # Objects (schools of fish defined by bounding boxes) are saved in a separate zarr-file
-        self.objects = None
-        if os.path.isdir(path.split('.')[0] + '_obj.zarr'):
-            objs = xr.open_zarr(path.split('.')[0] + '_obj.zarr', chunks='auto')
-            self.objects = xr.Dataset(objs)
+            # Fish categories used in survey
+            self.fish_categories = [cat for cat in self.annot.category.values if cat != -1]
+        else:
+            print(f' No annotation file found at {self.annotation_path}')
 
-        # Get seabed if saved in zarr_file, returns None otherwise
-        self._seabed = self.ds.get('seabed')
+        # Load seabed file
+        self.seabed = None
+        if os.path.isdir(self.seabed_path):
+            self.seabed = xr.open_zarr(self.seabed_path)
 
-    def get_rawfile_start_idx(self):
+        # Load objects list
+        self.objects_df = None
+        if os.path.isfile(self.objects_df_path):# and os.path.isfile(self.work_path):
+            self.objects_df = pd.read_csv(self.objects_df_path, index_col=None)
+
+    def get_ping_index(self, ping_time):
         """
-        Get the start index of each raw file. Returns vector where length = nr of rawfiles in zarr file
+        Due to rounding errors, the ping_time variable for labels and data are not exactly equal.
+        This function returns the closest index to the input ping time
+        :param ping_time: (np.datetime64)
+        :return: (int) index of closest index in data time_vector
         """
-        if self.raw_file_start is None:
-            name_changes = np.argwhere(self.raw_file[:-1].values != self.raw_file[1:].values) + 1
-            if len(name_changes) == 0:
-                self.raw_file_start = np.array([0])
-                return self.raw_file_start
+        return int(np.abs((self.time_vector - ping_time)).argmin().values)
 
-            self.raw_file_start = np.insert(name_changes, 0, 0, axis=0).squeeze()
-
-        return self.raw_file_start
-
-    # TODO test get last rawfile
-    def get_data_rawfile(self, raw_file, frequencies=None, drop_na=False):
+    def get_range_index(self, range):
         """
-        Get sv data for specified raw_file
-        :param raw_file: (str)
-        :param frequencies: (list) if None, all frequencies are returned
-        :param drop_na: (bool) if True, nans at the bottom of data is dropped, if any
+        Get closest index in range_vector
         """
+        return int(np.abs((self.range_vector - range)).argmin().values)
+
+    def get_fish_schools(self, category='all'):
+        """
+        Get all bounding boxes for the input categories
+        :param category: Categories to include ('all', or list)
+        :return: dataframe with bounding boxes
+        """
+        if self.objects_df is None:
+            raise FileNotFoundError(f'No objects file at {self.objects_df_path}')
+
+
+        if category == 'all':
+            category = self.fish_categories
+
+        if not isinstance(category, (list, np.ndarray)):
+            category = [category]
+
+        return self.objects_df.loc[self.objects_df.category.isin(category)]
+
+    def get_data_slice(self, idx_ping: (int, None) = None, n_pings: (int, None) = None, idx_range: (int, None) = None, n_range: (int, None) = None,
+                  frequencies: (int, list, None) = None, drop_na=False, return_numpy=True):
+        '''
+        Get slice of xarray.Dataset based on indices in terms of (frequency, ping_time, range).
+        Arguments for 'ping_time' and 'range' indices are given as the start index and the number of subsequent indices.
+        'range' and 'frequency' arguments are optional.
+
+        :param idx_ping: (int) First ping_time index of the slice
+        :param n_pings: (int) Number of subsequent ping_time indices of the slice
+        :param idx_range: (int | None) First range index of the slice (None slices from first range index)
+        :param n_range: (int | None) Number of subsequent range indices of the slice (None slices to last range index)
+        :param frequencies: (int | list[int] | None) Frequencies in slice (None returns all frequencies)
+        :return: Sliced xarray.Dataset
+
+        Example:
+        ds_slice = ds.get_slice(idx_ping=20000, n_pings=256) # xarray.Dataset sliced in 'ping_time' dimension [20000:20256]
+        sv_data = ds_slice.sv # xarray.DataArray of underlying sv data
+        sv_data_numpy = sv_data.values # numpy.ndarray of underlying sv data
+        '''
+
+        assert isinstance(idx_ping, (int, np.integer, type(None)))
+        assert isinstance(n_pings, (int, np.integer, type(None)))
+        assert isinstance(idx_range, (int, type(None)))
+        assert isinstance(n_range, (int, np.integer, type(None)))
+        assert isinstance(frequencies, (int, np.integer, list, np.ndarray, type(None)))
+        if isinstance(frequencies, list):
+            assert all([isinstance(f, (int, np.integer)) for f in frequencies])
+
+        slice_ping_time = slice(idx_ping, idx_ping + n_pings)
+
+        if idx_range is None:
+            slice_range = slice(None, n_range)  # Valid for n_range int, None
+        elif n_range is None:
+            slice_range = slice(idx_range, None)
+        else:
+            slice_range = slice(idx_range, idx_range + n_range)
+
         if frequencies is None:
             frequencies = self.frequencies
+        # Make sure frequencies is array-like to preserve dims when slicing
+        if isinstance(frequencies, (int, np.integer)):
+            frequencies = [frequencies]
 
-        # Get start and end index of rawfile
-        idx = np.argwhere(self.raw_file_included == raw_file).squeeze()
-        if (idx + 1 == len(self.raw_file_included)) or (len(self.raw_file_included) == 1):
-            (x0, x1) = (self.get_rawfile_start_idx()[idx], self.shape[0])
-        else:
-            (x0, x1) = self.get_rawfile_start_idx()[idx:idx + 2]
-
-        # get data
-        data = self.ds.sv.loc[frequencies][:, x0:x1, :]
-
-        # drop nans at the bottom of rawfile
-
-        if drop_na:
-            data = data.dropna(dim='ping_time')
-            data = data.dropna(dim='range')
-
-        return data
-
-    def get_labels_rawfile(self, raw_file, drop_na=False, heave=False):
-
-        """
-        Get annotation mask for specified rawfile
-        :param raw_file: (str)
-        :param drop_na: (bool) if True, nans at the bottom of data is dropped, if any
-        :param heave:
-        'heave' == True: returns labels without heave-corrections, i.e. labels that match the echogram data.
-        'heave' == False: returns original heave-corrected labels, which *does not* match the echogram data.
-        """
-        idx = np.argwhere(self.raw_file_included == raw_file).squeeze()
-        if idx + 1 == len(self.raw_file_included) or len(self.raw_file_included) == 1:
-            (x0, x1) = (self.get_rawfile_start_idx()[idx], self.shape[0])
-        else:
-            (x0, x1) = self.get_rawfile_start_idx()[idx:idx + 2]
-
-        if heave:
-            if self.ds.get('labels_heave') is None: # create label mask from parquet file if not included in zarr
-                self._create_label_mask(heave)
-            labels = self.ds.labels_heave[x0:x1, :]
-        else:
-            if self.ds.get('labels') is None: # create label mask from parquet file if not included in zarr
-                self._create_label_mask(heave)
-            labels = self.ds.labels[x0:x1, :]
-
-        # drop nans
-        if drop_na:
-            labels = labels.dropna(dim='ping_time')
-            labels = labels.dropna(dim='range')
-        return labels
-
-    def get_data_ping(self, ping_idx, frequencies=None, drop_na=True):
-        """
-        Get data for specified ping or ping interval
-        :param ping_idx: (tuple/list/int) ping index or ping interval
-        :param frequencies: (list)
-        :param drop_na: (bool)
-        """
-        if frequencies is None:
-            frequencies = self.frequencies
-
-        if type(ping_idx) == tuple or type(ping_idx) == list:
-            data = self.ds.sv.loc[frequencies][:, ping_idx[0]:ping_idx[1], :]
-        else:
-            data = self.ds.sv.loc[frequencies][:, ping_idx, :]
-
-        if drop_na:
-            data = data.dropna(dim='range')
-        return data
-
-    def get_data_ping_range(self, ping_idx, range_idx, frequencies=None, drop_na=True):
-        """
-        Get data for specified ping or ping interval and range or range interval
-        :param ping_idx: (tuple/list/int) ping index or ping interval
-        :param range_idx: (tuple/list/int) range index or range interval
-        :param frequencies: (list)
-        :param drop_na: (bool)
-        """
-        if frequencies is None:
-            frequencies = self.frequencies
-
-        if (type(ping_idx) == tuple or type(ping_idx) == list) and (
-                type(range_idx) == tuple or type(range_idx) == list):
-            data = self.ds.sv.loc[frequencies][:, ping_idx[0]:ping_idx[1], range_idx[0]: range_idx[1]]
-        elif (type(ping_idx) == tuple or type(ping_idx) == list) and (
-                type(range_idx) != tuple or type(range_idx) != list):
-            data = self.ds.sv.loc[frequencies][:, ping_idx[0]:ping_idx[1], range_idx]
-        elif (type(ping_idx) != tuple or type(ping_idx) != list) and (
-                type(range_idx) == tuple or type(range_idx) == list):
-            data = self.ds.sv.loc[frequencies][:, ping_idx, range_idx[0]: range_idx[1]]
-        else:
-            data = self.ds.sv.loc[frequencies][:, ping_idx, range_idx]
+        data = self.ds.sv.sel(frequency=frequencies).isel(ping_time=slice_ping_time, range=slice_range)
 
         if drop_na:
             data = data.dropna(dim='range')
-        return data
 
-    def get_label_ping(self, ping_idx, drop_na=True, heave=True):
-        """
-        Get annotation mask for specified ping or ping interval
-        :param ping_idx: (tuple/list/int) ping index or ping interval
-        :param drop_na: (bool)
-        :param heave:
-        'heave' == True: returns labels without heave-corrections, i.e. labels that match the echogram data.
-        'heave' == False: returns original heave-corrected labels, which *does not* match the echogram data.
-        """
-
-        if heave:
-            if self.ds.get('labels_heave') is None:  # create label mask from parquet file if not included in zarr
-                self._create_label_mask(heave)
-            ds_labels = self.ds.labels_heave
+        if return_numpy:
+            return data.values
         else:
-            if self.ds.get('labels') is None:  # create label mask from parquet file if not included in zarr
-                self._create_label_mask(heave)
-            ds_labels = self.ds.labels
+            return data
 
-        if type(ping_idx) == tuple or type(ping_idx) == list:
-            labels = ds_labels[ping_idx[0]:ping_idx[1], :]
+    def get_label_slice(self, idx_ping: int, n_pings: int, idx_range: (int, None) = None, n_range: (int, None) = None,
+                        drop_na=False, categories=None, return_numpy=True,
+                        mask=True, ignore=False):
+        """
+        Get slice of labels
+        :param idx_ping: (int) Index of start ping
+        :param n_pings: (int) Width of slice
+        :param idx_range: (int) Index of start range
+        :param n_range: (int) Height of slice
+        :param drop_na: (bool) Drop nans at the bottom of data (data is padded with nans since echograms have different heights)
+        :return: np.array with labels
+        """
+        assert isinstance(idx_ping, (int, np.integer))
+        assert isinstance(n_pings, (int, np.integer))
+        assert isinstance(idx_range, (int, np.integer, type(None)))
+        assert isinstance(n_range, (int, np.integer, type(None)))
+
+        slice_ping_time = slice(idx_ping, idx_ping + n_pings)
+
+        if idx_range is None:
+            slice_range = slice(None, n_range)  # Valid for n_range int, None
+        elif n_range is None:
+            slice_range = slice(idx_range, None)
         else:
-            labels = ds_labels[ping_idx, :]
+            slice_range = slice(idx_range, idx_range + n_range)
 
-        if drop_na:
-            return labels.dropna(dim='range')
+        # Convert labels from set of binary masks to 2D segmentation mask
+        if categories is None:
+            categories = np.array(self.fish_categories)
+
+        # Initialize label mask and fill
+        label_slice = self.labels.isel(ping_time=slice_ping_time, range=slice_range)
+
+        if mask:
+            if ignore:
+                labels = label_slice.sel(category=-1)
+            else:
+                labels = xr.zeros_like(label_slice.sel(category=-1))
+
+            #labels = self.labels.sel(category=categories[0]).isel(ping_time=slice_ping_time, range=slice_range) * categories[0]
+            for cat in categories:
+                labels = labels.where(label_slice.sel(category=cat) <= 0, cat) # Where condition is False, fill with cat
+
+            # Drop nans in range dimension
+            if drop_na:
+                labels = labels.dropna(dim='range')
+        else:
+            # TODO: mask away -1?
+            labels = label_slice.sel(category=categories)
+
+        # Convert to np array
+        if return_numpy:
+            return labels.values
         else:
             return labels
 
-    def get_label_ping_range(self, ping_idx, range_idx, drop_na=True, heave=True):
+    def get_seabed_mask(self, idx_ping: int, n_pings: int, idx_range: (int, None) = None, n_range: (int, None) = None,
+                        return_numpy=True, correct_transducer_offset=True):
         """
-        Get annotation mask for specified ping or ping interval and range or range interval
-        :param ping_idx: (tuple/list/int) ping index or ping interval
-        :param range_idx: (tuple/list/int) range index or range interval
-        :param drop_na: (bool)
-        :param heave:
-        'heave' == True: returns labels without heave-corrections, i.e. labels that match the echogram data.
-        'heave' == False: returns original heave-corrected labels, which *does not* match the echogram data.
+        Get seabed mask from slice
+        :param idx_ping: Start ping index (int)
+        :param n_pings: End ping index (int)
+        :param idx_range: Number of pings (int)
+        :param n_range: Number of vertical samples to include (int)
+        :param return_numpy: Return mask as numpy array
+        :return: Mask where everything below seafloor is marked with 1, everything above is marked with 0
         """
 
-        if heave:
-            if self.ds.get('labels_heave') is None:  # create label mask from parquet file if not included in zarr
-                self._create_label_mask(heave)
-            ds_labels = self.ds.labels_heave
+        assert isinstance(idx_ping, (int, np.integer))
+        assert isinstance(n_pings, (int, np.integer))
+        assert isinstance(idx_range, (int, np.integer, type(None)))
+        assert isinstance(n_range, (int, np.integer, type(None)))
+
+        slice_ping_time = slice(idx_ping, idx_ping + n_pings)
+
+        if idx_range is None:
+            idx_range = 0
+
+        if n_range is None:
+            slice_range = slice(idx_range, None)
         else:
-            if self.ds.get('labels') is None:  # create label mask from parquet file if not included in zarr
-                self._create_label_mask(heave)
-            ds_labels = self.ds.labels
+            slice_range = slice(idx_range,
+                                idx_range + n_range)
 
-        if (type(ping_idx) == tuple or type(ping_idx) == list) and (
-                type(range_idx) == tuple or type(range_idx) == list):
-            labels = ds_labels[ping_idx[0]:ping_idx[1], range_idx[0]: range_idx[1]]
-        elif (type(ping_idx) == tuple or type(ping_idx) == list) and (
-                type(range_idx) != tuple or type(range_idx) != list):
-            labels = ds_labels[ping_idx[0]:ping_idx[1], range_idx]
-        elif (type(ping_idx) != tuple or type(ping_idx) != list) and (
-                type(range_idx) == tuple or type(range_idx) == list):
-            labels = ds_labels[ping_idx, range_idx[0]: range_idx[1]]
+        # Everything below seafloor has value 1, everything above has value 0
+        seabed_slice = self.seabed.bottom_range.isel(ping_time=slice_ping_time, range=slice_range).fillna(0)
+
+        if return_numpy:
+            return seabed_slice.values
         else:
-            labels = ds_labels[ping_idx, range_idx]
+            return seabed_slice
 
-        if drop_na:
-            return labels.dropna(dim='range')
-        else:
-            return labels
+    def get_seabed(self, idx_ping: int, n_pings: (int) = 1):
+        """
+        Get vector of range indices for the seabed
+        WARNING slow for large stretches of data
 
-    def data_numpy(self, raw_file, frequencies=None):
+        :param idx_ping: index of start ping (int)
+        :param n_pings: number of pings to include (int)
+        :return: vector with seabed range indices (np.array)
         """
-        Get data for specified raw file in numpy format
-        :param raw_file: (str)
-        :param frequencies: (list)
-        :return (numpy.array)
-        """
-        data = self.get_data_rawfile(raw_file, frequencies)
-        return np.array(data)  # read into memory
 
-    def label_numpy(self, raw_file):
-        """
-        Get annotation mask for specified raw file
-        :param raw_file:
-        :return: (numpy.array)
-        """
-        label = self.get_labels_rawfile(raw_file)
-        return np.array(label)  # read into memory
+        # Get seabed mask for the specified pings
+        seabed_mask = self.get_seabed_mask(idx_ping, n_pings, return_numpy=True)
 
-    def get_bounding_boxes(self, raw_file):
-        """
-        Retrieve object (fish school) bounding boxes for specified raw file
-        :param raw_file: (str)
-        """
-        raw_obj = self.objects.where(self.objects.raw_file == raw_file, drop=True).dropna(dim='object_length')
-        if raw_obj.sizes['raw_file'] == 0:
-            return raw_obj.bounding_box.values, raw_obj.fish_type_index.values
+        # Find indexes with non-zero values
+        seabed_idx = np.argwhere(seabed_mask>0)
+        ping_idxs, range_idxs = (seabed_idx[:, 0], seabed_idx[:, 1])
 
-        fish_labels = raw_obj.fish_type_index.values  # .squeeze(1)
-        bounding_boxes = raw_obj.bounding_box.values  # .squeeze(2)  # (bbox, length)
-        return bounding_boxes, fish_labels
+        # Fill a vector with the smallest non-zero value to get the indices of the seabed
+        seabed = np.ones(n_pings)*-1
+        for i in range(n_pings):
+            if len(range_idxs[ping_idxs == i]) == 0:
+                seabed[i] = seabed_mask.shape[1]
+            else:
+                seabed[i] = np.min(range_idxs[ping_idxs == i])
 
-    def data_numpy(self, raw_file, frequencies=None):
-        """
-        Get data for specified raw file in numpy format
-        :param raw_file: (str)
-        :param frequencies: (list)
-        :return (numpy.array)
-        """
-        data = self.get_data_rawfile(raw_file, frequencies)
-        return np.array(data)  # read into memory
+        return seabed.astype(int)
 
-    def label_numpy(self, raw_file):
-        """
-        Get annotation mask for specified raw file
-        :param raw_file:
-        :return: (numpy.array)
-        """
-        label = self.get_labels_rawfile(raw_file)
-        return np.array(label)  # read into memory
+    def get_rawfile_index(self, rawfile):
+        relevant_pings = np.argwhere(self.raw_file.values == rawfile).ravel()
+        start_ping = relevant_pings[0]
+        n_pings = len(relevant_pings)
+        return start_ping, n_pings
 
-    def filter(self, min_shape=256):
-        raw_file_excluded = []
-        for raw_file in tqdm(self.raw_file_included):
-            # Shape
-            shape = self.get_data_rawfile(raw_file, drop_na=True).shape
-            # print(shape, shape[2])
-            if shape[2] < min_shape:
-                raw_file_excluded.append(raw_file)
+    # These two functions are (currently) necessary to predict on zarr-data
+    def get_data_rawfile(self, rawfile, frequencies, drop_na):
+        start_ping, n_pings = self.get_rawfile_index(rawfile)
 
-        self.raw_file_excluded = raw_file_excluded
+        return self.get_data_slice(idx_ping=start_ping, n_pings=n_pings, frequencies=frequencies, drop_na=drop_na, return_numpy=True)
 
-    # TODO change from subplot to subplots -> more flexible?
+    def get_labels_rawfile(self, rawfile):
+        start_ping, n_pings = self.get_rawfile_index(rawfile)
+
+        return self.get_label_slice(idx_ping=start_ping, n_pings=n_pings, return_numpy=True)
+
+    def get_seabed_rawfile(self, rawfile):
+        start_ping, n_pings = self.get_rawfile_index(rawfile)
+
+        return self.get_seabed(idx_ping=start_ping, n_pings=n_pings)
+
     def visualize(self,
+                  ping_idx=None,
+                  n_pings=2000,
+                  range_idx=None,
+                  n_range=None,
                   raw_file=None,
-                  predictions=None,
-                  prediction_strings=None,
-                  labels_original=None,
-                  labels_refined=None,
-                  labels_korona=None,
-                  pred_contrast=1.0,
                   frequencies=None,
-                  draw_seabed=False,
+                  draw_seabed=True,
                   show_labels=True,
-                  show_object_labels=False,
-                  show_grid=False,
-                  show_name=True,
-                  show_freqs=True,
-                  show_labels_str=True,
-                  show_predictions_str=True,
-                  return_fig=False,
-                  figure=None,
-                  data_transform=db,
-                  drop_na=False,
-                  frequency_unit='Hz'):
+                  data_transform=db):
         """
-        Visualize echogram from zarr format, labels and predictions
+        Visualize data from xarray
+        :param ping_idx: Index of start ping (int)
+        :param n_pings: Nr of pings to visualize (int)
+        :param range_idx: Index of start range (int)
+        :param n_range: Nr of range samples to visualize (int)
+        :param raw_file: Visualize data from a single raw file (overrides ping index arguments!) (str)
+        :param frequencies: Frequencies to visualize (list)
+        :param draw_seabed: Draw seabed on plots (bool)
+        :param show_labels: Show annotation (bool)
+        :param data_transform: Data transform before visualization (db transform recommended) (function)
         """
+
+        # Visualize data from a single raw file
+        if raw_file is not None:
+            idxs = np.argwhere(self.raw_file.values == raw_file + '.raw').ravel()
+            ping_idx = idxs[0]
+            n_pings = len(idxs)
+
         # retrieve data
-        data = self.get_data_rawfile(raw_file, frequencies, drop_na=drop_na)
+        if ping_idx is None:
+            ping_idx = np.random.randint(0, len(self.time_vector) - n_pings)
+        if frequencies is None:
+            frequencies = list(self.frequencies.values)
+        if range_idx is None:
+            range_idx = 0
+        if n_range is None:
+            n_range = self.shape[1]
+
+        data = self.get_data_slice(ping_idx, n_pings, range_idx, n_range, frequencies, drop_na=True)
+
+        # Optionally transform data
         if data_transform != None:
             data = data_transform(data)
 
         # Initialize plot
-        # plt = setup_matplotlib()
-        fig = plt.figure(dpi=200)
+        fig, axs = plt.subplots(ncols=1, nrows=len(frequencies) + int(show_labels), figsize=(16, 16), sharex=True)
+        axs = axs.ravel()
         plt.tight_layout()
 
-        # Tick labels
-        tick_labels_y = data.range
-        tick_labels_y = tick_labels_y - np.min(tick_labels_y)
-        tick_idx_y = np.arange(start=0, stop=len(tick_labels_y), step=int(len(tick_labels_y) / 4))
-        tick_labels_x = data.ping_time
-        tick_idx_x = np.arange(start=0, stop=len(tick_labels_x), step=int(len(tick_labels_x) / 6))
-        tick_labels_x = pd.DatetimeIndex(tick_labels_x[tick_idx_x].values)
-        tick_labels_x = (tick_labels_x - tick_labels_x.min()).total_seconds() / 60
+        # Get tick labels
+        tick_idx_y = np.arange(start=0, stop=data.shape[-1], step=int(data.shape[-1] / 4))
+        tick_labels_y = self.range_vector[range_idx:range_idx+n_range].values
+        tick_labels_y = np.round(tick_labels_y[tick_idx_y], decimals=0).astype(np.int32)
+
+        tick_idx_x = np.arange(start=0, stop=n_pings, step=int(n_pings / 6))
+        tick_labels_x = self.time_vector[ping_idx:ping_idx + n_pings]
+        tick_labels_x = tick_labels_x[tick_idx_x].values
+        tick_labels_x = [np.datetime_as_string(t, unit='s').replace('T', '\n') for t in tick_labels_x]
+        #
+        plt.setp(axs, xticks=tick_idx_x, xticklabels=tick_labels_x,
+                 yticks=tick_idx_y, yticklabels=tick_labels_y)
+
 
         # Format settings
-        color_seabed = {'seabed': 'white'}
-        lw = {'seabed': 0.4}
         cmap_labels = mcolors.ListedColormap(['yellow', 'black', 'red', 'green'])
         boundaries_labels = [-200, -0.5, 0.5, 1.5, 2.5]
         norm_labels = mcolors.BoundaryNorm(boundaries_labels, cmap_labels.N, clip=True)
 
-        cmap_seg = mcolors.ListedColormap(['black', 'red', 'firebrick'])
-        boundaries_seg = [0, 0.6, 0.8, 1]
-        norm_seg = mcolors.BoundaryNorm(boundaries_seg, cmap_seg.N, clip=True)
+        # Get seabed
+        if draw_seabed:
+            seabed = self.get_seabed(idx_ping=ping_idx, n_pings=n_pings)
+            seabed[seabed > data.shape[-1]] = data.shape[-1] - 1
 
-        # get nr of subplots
-        n_plts = data.shape[0] + int(show_labels)
-        if predictions is not None:
-            if type(predictions) is np.ndarray:
-                n_plts += 1
-            elif type(predictions) is list:
-                n_plts += len(predictions)
-
+        # Plot data
         for i in range(data.shape[0]):
-            if i == 0:
-                main_ax = plt.subplot(n_plts, 1, i + 1)
-            else:
-                plt.subplot(n_plts, 1, i + 1, sharex=main_ax, sharey=main_ax)
+            axs[i].imshow(data[i, :, :].T, cmap='jet', aspect='auto')
+            axs[i].set_title(f"{str(frequencies[i])} Hz", fontsize=8)
+            axs[i].set_ylabel('Range (m)')
 
-            if show_freqs:
-                str_title = str(data[i].frequency.values) + frequency_unit
-                plt.title(str_title, fontsize=8)
-
-            plt.imshow(data[i, :, :].T, cmap='jet', aspect='auto')
-
-            # Grid
-            if not show_grid:
-                plt.axis('off')
-            else:
-                plt.yticks(tick_idx_y, [int(tick_labels_y[j]) for j in tick_idx_y], fontsize=6)
-                plt.xticks(tick_idx_x, np.round(tick_labels_x, 2), fontsize=6)
-                plt.ylabel("Depth\n[meters]", fontsize=8)
-            if draw_seabed:
-                plt.plot(np.arange(data.shape[1]), self.get_seabed(raw_file), c=color_seabed['seabed'], lw=lw['seabed'])
-
-        # Labels
+        # Optionally plot labels
         if show_labels:
-            i += 1
-            labels = self.get_labels_rawfile(raw_file)
-            if drop_na:
-                labels = labels.where(~labels.isnull(), drop=True)
-            plt.subplot(n_plts, 1, i + 1, sharex=main_ax, sharey=main_ax)
-            if show_labels_str:
-                plt.title("Annotations (original)", fontsize=8)
-            plt.imshow(labels.T, cmap=cmap_labels, norm=norm_labels, aspect='auto')
+            labels = self.get_label_slice(ping_idx, n_pings, range_idx, n_range, drop_na=True)
 
-            if not show_grid:
-                plt.axis('off')
-            else:
-                plt.yticks(tick_idx_y, [int(tick_labels_y[j]) for j in tick_idx_y], fontsize=6)
-                plt.xticks(tick_idx_x, np.round(tick_labels_x, 2), fontsize=6)
-                plt.ylabel("Depth\n[meters]", fontsize=8)
-            if draw_seabed:
-                plt.plot(np.arange(data.shape[1]), self.get_seabed(raw_file), c=color_seabed['seabed'], lw=lw['seabed'])
+            # crop labels
+            labels = labels[:, :data.shape[-1]]
+            axs[i+1].imshow(labels.T, cmap=cmap_labels, norm=norm_labels, aspect='auto')
+            axs[i+1].set_ylabel('Range (m)')
 
-            # object labels
-            if show_object_labels and raw_file is not None:
-                objects, labels = self.get_bounding_boxes(raw_file)
-                if objects.shape[-1] != 0:
-                    for obj_idx in range(objects.shape[1]):
-                        y = objects[0, obj_idx]
-                        x = objects[2, obj_idx]
-                        s = int(labels[obj_idx])
-                        plt.text(x, y, s, {'FontSize': 8, 'color': 'white', 'backgroundcolor': [0, 0, 0, .2]})
+        # Optionally draw seabed
+        if draw_seabed:
+            for ax in axs:
+                ax.plot(np.arange(data.shape[1]), seabed, c='white', lw=2)
 
-        # Show predictions
-        # TODO test this
-        if predictions is not None:
-            if type(predictions) is np.ndarray:
-                predictions = [predictions]
-                prediction_strings = ['Predictions']
-            for p in range(len(predictions)):
-                i += p
-                plt.subplot(n_plts, 1, i + 2, sharex=main_ax, sharey=main_ax)
-                plt.imshow(np.power(predictions[p], pred_contrast),
-                           cmap=cmap_seg, norm=norm_seg, aspect='auto', vmin=0, vmax=1)
-                           #cmap='viridis', aspect='auto', vmin=0, vmax=1)
-                if prediction_strings is not None:
-                    plt.title(prediction_strings[p], fontsize=8)
-                if draw_seabed:
-                    plt.plot(np.arange(data.shape[1]), self.get_seabed(raw_file), c=color_seabed['seabed'],
-                             lw=lw['seabed'])
-                if not show_grid:
-                    plt.axis('off')
-                else:
-                    plt.yticks(tick_idx_y, [int(tick_labels_y[j]) for j in tick_idx_y], fontsize=6)
-                    plt.xticks(tick_idx_x, np.round(tick_labels_x, 2), fontsize=6)
-                    plt.ylabel("Depth\n[meters]", fontsize=8)
-
-        if show_name and raw_file is not None:
-            fig.suptitle(raw_file, fontsize=10)
-
-        plt.xlabel('Time [minutes]', fontsize=8)
-        plt.tight_layout()
+        plt.xlabel('Ping time')
         plt.show()
 
-    # TODO add option to save to file, consider memmap to keep separate from raw
-    def get_seabed(self, raw_file=None, save_to_file=False):
-        if self._seabed is not None:
+    def estimate_seabed(self, raw_file=None, save_to_file=True):
+        """ Return, load or calculate seabed for entire reader"""
+        if self.seabed_dataset is not None:
             if raw_file is None:
-                return self._seabed
-            return self._seabed.where(self.ds.raw_file == raw_file, drop=True)
-
+                return self.seabed_dataset.seabed
+            else:
+                return self.seabed_dataset.seabed.where(self.seabed_dataset.raw_file == raw_file, drop=True).astype(int).values
+        elif os.path.isdir(self.seabed_path):
+            self.seabed_dataset = xr.open_zarr(self.seabed_path)
+            return self.get_seabed(raw_file)
         else:
-            def set_non_finite_values_to_zero(in_value):
-                # in_value[np.invert(np.isfinite(in_value))] = 0
-                in_value = in_value.where(np.isfinite(in_value), other=0, drop=False)
-                return in_value
-
+            print("Estimate seabed")
             def seabed_gradient(data):
                 gradient_filter_1 = np.array([[1, 2, 1], [0, 0, 0], [-1, -2, -1]])
                 gradient_filter_2 = np.array([[1, 5, 1], [-2, -10, -2], [1, 5, 1]])
@@ -893,51 +843,67 @@ class DataReaderZarr():
                 grad_2 = conv2d(data, gradient_filter_2, mode='same')
                 return np.multiply(np.heaviside(grad_1, 0), grad_2)
 
-            data = set_non_finite_values_to_zero(self.get_data_rawfile(raw_file=raw_file, drop_na=False))
+            data = self.ds.sv.fillna(0)  # fill nans with 0
 
             # Number of pixel rows at top of image (noise) not included when computing the maximal gradient
-            n = 10 + int(0.05 * data.shape[2])
-            # Vertical shift of seabed approximation line (to give a conservative line)
-            a = int(0.004 * data.shape[2])
+            n = 150  # 10*int(0.05*500)
 
-            seabed = np.zeros((data.shape[:2]))  # (freq, ping_time)
+            # Vertical shift of seabed approximation line (to give a conservative line)
+            a = int(0.004 * 500)
+
+            seabed = xr.DataArray(data=np.zeros((data.shape[:2])),
+                                  dims=['frequency', 'ping_time'],
+                                  coords={'frequency': data.frequency,
+                                          'ping_time': data.ping_time,
+                                          'raw_file': ("ping_time", data.raw_file)})
+            
             for i in range(data.shape[0]):
-                seabed[i, :] = -a + n + np.argmax(seabed_gradient(data[i, :, :])[:, n:], axis=1)
+                seabed_grad = xr.apply_ufunc(seabed_gradient, data[i, :, :], dask='allowed')
+                seabed[i, :] = -a + n + seabed_grad[:, n:].argmax(axis=1)
 
             # Repair large jumps in seabed altitude
-            repair_threshold = -8
-
             # Set start/stop for repair interval [i_edge:-i_edge] to avoid repair at edge of echogram
             i_edge = 2
 
-            sb_max = np.array(np.max(data[:, :, n:], axis=2).values) # max value in range (freq, ping)
-            sb_max = np.log(1e-10 + sb_max)         # log transform
-            sb_max -= np.mean(sb_max, axis=1)[:,None]     # get mean value for each freq -(freq,)
-            sb_max *= 1 / np.std(sb_max, axis=1)[:,None]
+            # Use rolling mean and rolling std with window of 500 to find jumps in the seabed altitude
+            repair_threshold = 0.75
+            window_size = 500
+            sb_max = seabed - seabed.rolling(ping_time=window_size, min_periods=1, center=True).mean()
+            sb_max *= 1 / seabed.rolling(ping_time=window_size, min_periods=1, center=True).std()
 
             for f in range(sb_max.shape[0]):
                 i = i_edge
-                while i < sb_max.shape[1] - i_edge:
-                    # Get interval [idx_0, idx_1] where seabed will be repaired for frequency f
-                    if sb_max[f, i] < repair_threshold:
-                        idx_0 = i
-                        while i < sb_max.shape[1]:
-                            if sb_max[f, i] < repair_threshold:
-                                i += 1
-                            else:
-                                break
-                        idx_1 = i - 1
-                        # Replace initial seabed values with mean value before/after repair interval
-                        if idx_0 <= i_edge:
-                            seabed[f, idx_0:idx_1 + 1] = seabed[f, idx_1 + 1]
-                        elif idx_1 >= sb_max.shape[0] - i_edge:
-                            seabed[f, idx_0:idx_1 + 1] = seabed[f, idx_0 - 1]
-                        else:
-                            seabed[f, idx_0:idx_1 + 1] = np.mean(seabed[f, [idx_0 - 1, idx_1 + 1]])
-                    i += 1
 
-            return np.rint(np.median(seabed, axis=0)).astype(int)
+                # Get indices of
+                to_fix = np.argwhere(abs(sb_max[f, i:]).values > repair_threshold).ravel() + i
+                k = 0
+                while k < len(to_fix):
+                    idx_0 = to_fix[k]
 
+                    # Check if there is multiple subsequent indexes that needs repair
+                    c = 0
+                    while to_fix[k + c] == idx_0 + c:
+                        c += 1
+                        if k + c == len(to_fix):
+                            break
+                    idx_1 = idx_0 + c - 1
+
+                    if idx_0 <= i_edge:
+                        seabed[f, idx_0:idx_1 + 1] = seabed[f, idx_1 + 1]
+                    elif idx_1 >= sb_max.shape[1] - i_edge:
+                        seabed[f, idx_0:idx_1 + 1] = seabed[f, idx_0 - 1]
+                    else:
+                        seabed[f, idx_0:idx_1 + 1] = (seabed[f, [idx_0 - 1, idx_1 + 1]]).mean()
+
+                    k += c
+
+            s = xr.ufuncs.rint(seabed.median(dim='frequency'))
+            self.seabed_dataset = xr.Dataset(data_vars={'seabed': s.astype(int)}, coords={'ping_time': s.ping_time})
+
+            # save to zarr file
+            if save_to_file:
+                self.seabed_dataset.to_zarr(self.seabed_path)
+            return self.get_seabed(raw_file=raw_file)
 
     # TODO Save to file, not in zarr?
     def _create_label_mask(self, heave=True):
@@ -968,32 +934,34 @@ class DataReaderZarr():
                     self.ds["labels"].loc[row['pingTime'], x0:x1] = fish_id
 
 
-def get_zarr_files(frequencies=[18, 38, 120, 200], minimum_shape=256):
+def get_zarr_files(years, frequencies=[18, 38, 120, 200], minimum_shape=256, path_to_zarr_files=None):
+    if path_to_zarr_files is None:
+        path_to_zarr_files = paths.path_to_zarr_files()
 
-    path_to_zarr_files = paths.path_to_zarr_files()
-    zarr_files = sorted([z_file for z_file in os.listdir((path_to_zarr_files)) \
-                         if '_obj' not in z_file and '.zarr' in z_file])
-
-    zarr_readers = [DataReaderZarr(os.path.join(path_to_zarr_files, zarr_file)) for zarr_file in zarr_files]
+    zarr_files = sorted([z_file for z_file in glob(path_to_zarr_files+'/**/*sv.zarr', recursive=True)])
+    zarr_readers = [DataReaderZarr(zarr_file) for zarr_file in zarr_files]
 
     # Filter on frequencies
     zarr_readers = [z for z in zarr_readers if all([f in z.frequencies for f in frequencies])]
 
-    # Filter on shape: minimum size
-    # for zarr_reader in zarr_readers:
-    #     zarr_reader.filter()
-    #     print(zarr_reader.raw_file_excluded)
-    # Filter
+    # Filter on years
+    if years == 'all':
+        return zarr_readers
+    else:
+        assert type(years) is list, f"Uknown years variable format: {type(years)}"
+        zarr_readers = [reader for reader in zarr_readers if reader.year in years]
 
     return zarr_readers
 
-def get_echograms(years='all', frequencies=[18, 38, 120, 200], minimum_shape=256):
+def get_echograms(years='all', path_to_echograms=None, frequencies=[18, 38, 120, 200], minimum_shape=256):
     """ Returns all the echograms for a given year that contain the given frequencies"""
 
-    path_to_echograms = paths.path_to_echograms()
+    if path_to_echograms is None:
+        path_to_echograms = paths.path_to_echograms()
     eg_names = os.listdir(path_to_echograms)
     eg_names = sorted(eg_names) # To visualize echogram predictions in the same order with two different models
     eg_names = [name for name in eg_names if '.' not in name] # Include folders only: exclude all root files (e.g. '.tar')
+
 
     echograms = [Echogram(os.path.join(path_to_echograms, e)) for e in eg_names]
 
@@ -1024,24 +992,13 @@ def get_echograms(years='all', frequencies=[18, 38, 120, 200], minimum_shape=256
 
         return echograms
 
-def get_data_readers(years='all', frequencies=[18, 38, 120, 200], minimum_shape=256, mode='zarr'):
+def get_data_readers(years='all', frequencies=[18, 38, 120, 200], minimum_shape=50, mode='zarr'):
     if mode == 'memm':
-        return get_echograms(years, frequencies, minimum_shape)
+        return get_echograms(years=years, frequencies=frequencies, minimum_shape=minimum_shape)
     elif mode == 'zarr':
-        return get_zarr_files(frequencies, minimum_shape)
+        return get_zarr_files(years, frequencies, minimum_shape)
 
 if __name__ == '__main__':
-    # Memmap reader
-    readers = get_data_readers(years=[2017], mode='memm')
-    #reader = [reader for reader in readers if reader.name == '2017843-D20170426-T063457']
-    reader = [reader for reader in readers if reader.name == '2017843-D20170513-T081028']
-    reader = reader[0]
-    print(reader.shape)
-    seabed = reader.visualize(frequencies=[200], show_grid=False)
+    pass
 
-   # Zarr reader
-    readers = get_data_readers(mode='zarr', frequencies=[18000, 38000, 120000, 200000])
-    reader = readers[0]
-    print(reader.shape)
-    seabed = reader.get_seabed(raw_file=reader.raw_file_included[0])
-    reader.visualize(raw_file=reader.raw_file_included[0], frequencies=[200000])
+
