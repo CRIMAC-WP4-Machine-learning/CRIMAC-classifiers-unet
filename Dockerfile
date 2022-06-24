@@ -11,4 +11,4 @@ COPY setpyenv.json /crimac_unet
 
 WORKDIR /crimac_unet
 
-CMD python mainscript.py 
+CMD python dockerscript.py

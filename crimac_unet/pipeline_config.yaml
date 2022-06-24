@@ -43,7 +43,7 @@ eval_mode: 'all'
 # Partitioning of the data for the inference (Options: selected surveys, single survey, all surveys - default: 'all surveys')
 partition_predict: 'selected surveys'
 # List with the names of the selected survey
-selected_surveys: ['S2019847']
+selected_surveys: ['S2019847_0511']
 # List with strings referring to colors
 colors_list: []
 # Whether to save the labels
