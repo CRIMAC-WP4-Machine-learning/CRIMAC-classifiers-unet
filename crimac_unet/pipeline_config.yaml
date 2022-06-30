@@ -29,7 +29,7 @@ lr_step: 1000
 # Number of training batches (default: 10000)
 iterations: 500
 # Partitioning of training data (Options: random, selected surveys, single survey, all surveys - default: 'all surveys')
-partition: 'selected surveys'
+partition: 'single survey'
 # If partition is selected_surveys, used this partition during training
 train_surveys: [2011, 2012, 2013, 2014, 2015, 2016]
 val_surveys: [2017]
@@ -41,7 +41,7 @@ save_model_params: True
 # Evaluation model (Options: all, region, fish - default:'all')
 eval_mode: 'all'
 # Partitioning of the data for the inference (Options: selected surveys, single survey, all surveys - default: 'all surveys')
-partition_predict: 'selected surveys'
+partition_predict: 'single survey'
 # List with the names of the selected survey
 selected_surveys: ['S2019847_0511']
 # List with strings referring to colors
