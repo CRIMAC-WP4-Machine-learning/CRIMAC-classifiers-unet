@@ -5,27 +5,68 @@ import numpy as np
 import random
 import time
 import os
-from pipeline_train_predict.pipeline import Config_Options, SegPipeUNet, pipeline_config
-from data.echogram import get_data_readers
-# from paths import *
 
-
-# Get the file paths
-SV_FILE = '/datain'+os.getenv('SV_FILE')
-BOTTOM_FILE = '/datain'+os.getenv('BOTTOM_FILE')
-PRED_FILE = '/dataout'+os.getenv('PRED_FILE')
-MODELWEIGHTS = '/model'+os.getenv('MODELWEIGHTS')
+# Get the environmental variables passed on from the container
+SV_FILE = '/datain/'
+BOTTOM_FILE = '/datain/'
+PRED_FILE = '/dataout/'
+MODELWEIGHTS = '/model/'+os.getenv('MODEL')
+SURVEY = os.getenv('SURVEY')
 
 # The docker mounts the main data folder as /datain/
 print('********************')
 print(' ')
 print('Files:')
 print('sv file:'+SV_FILE+' exists:'+ str(os.path.isdir(SV_FILE)))
-print('Bottom file:'+BOTTOM_FILE+' exists:'+str(os.path.isdir(BOTTOM_FILE)))
-print('Pred ouptutfile:'+PRED_FILE+' exists:'+str(os.path.isdir(PRED_FILE)))
-print('Models weihts file:'+MODELWEIGHTS+' exists:'+str(os.path.isfile(MODELWEIGHTS)))
+print('Bottom file dir:'+BOTTOM_FILE+' exists:'+str(os.path.isdir(BOTTOM_FILE)))
+print('Prediction dir:'+PRED_FILE+' exists:'+str(os.path.isdir(PRED_FILE)))
+print('Models weights file:'+MODELWEIGHTS+' exists:'+str(os.path.isfile(MODELWEIGHTS)))
 
+# The file locations are coded in the setpyenv file
+setpyenv = {
+    "syspath": "/crimac_unet/",
+    "path_to_echograms":  SV_FILE,
+    "path_to_korona_data": SV_FILE,
+    "path_to_korona_transducer_depths": SV_FILE,
+    "path_to_trained_model": MODELWEIGHTS,
+    "path_to_zarr_files": SV_FILE,
+    "path_for_saving_figs": PRED_FILE,
+    "path_for_saving_preds_labels": PRED_FILE}
 
+# Write setpyenv file based on environmental variables
+with open("/crimac_unet/setpyenv.json", "w") as fp:
+ json.dump(setpyenv, fp, indent = 4)
 
+# Set the correct paths to the files
+from paths import *
+from pipeline_train_predict.pipeline import Config_Options, SegPipeUNet, pipeline_config
+from data.echogram import get_data_readers
 
+# Check paths 
+print(' ')
+print('Check paths:')
+print(path_to_echograms())
+print(path_to_korona_data())
+print(path_to_korona_transducer_depths())
+print(path_to_trained_model())
+print(path_to_zarr_files())
+print(os.listdir(path_to_zarr_files()))
+print(path_for_saving_figs())
+print(os.listdir(path_for_saving_preds_labels()))
 
+# Configuration options dictionary
+configuration = pipeline_config()
+configuration['selected_surveys'] = [SURVEY]
+print(configuration)
+
+# Create options instance
+opt = Config_Options(configuration)
+
+# Set up the code
+segpipe = SegPipeUNet(opt)
+
+# Run prediction adn save segmentation predictions
+print("Save predictions")
+start = time.time()
+segpipe.save_segmentation_predictions_in_zarr(selected_surveys=opt.selected_surveys, resume=opt.resume_writing)
+print(f"Executed time for saving all prediction (h): {np.round((time.time() - start) / 3600, 2)}")

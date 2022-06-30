@@ -22,7 +22,7 @@ import sys
 import yaml
 
 try:
-    with open(os.path.join(os.path.dirname(__file__), 'setpyenv.json')) as file:
+    with open('./setpyenv.json') as file:
         json_data = file.read()
     setup_file = json.loads(json_data)
     if 'syspath' in setup_file.keys():

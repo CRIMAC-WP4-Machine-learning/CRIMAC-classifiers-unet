@@ -1,11 +1,12 @@
+import os
+os.chdir('/home/nilsolav/repos/CRIMAC-classifiers-unet/crimac_unet/')
+print(os.getcwd())
 import json
 import setpaths
 import torch
 import numpy as np
 import random
 import time
-import os
-# os.chdir('./crimac_unet/')
 from pipeline_train_predict.pipeline import Config_Options, SegPipeUNet, pipeline_config
 from data.echogram import get_data_readers
 from paths import *

@@ -108,23 +108,10 @@ The predictions can be run from docker.
 
 ## Example
 ```bash
-docker build --tag unet:latest .
+docker build --tag unet .
 ```
 
 ```bash
-docker run -it --rm --name unetpredictions:latest
--v "/mnt/c/DATAscratch/crimac-scratch/":/datain 
--v "/mnt/c/DATAscratch/crimac-scratch/NR_Unet":/model
--v "/mnt/c/DATAscratch/crimac-scratch/":/dataout
---security-opt label=disable
---env SV_FILE="/2019/S2019847_0511/ACOUSTIC/GRIDDED/S2019847_0511_sv.zarr"
---env BOTTOM_FILE="/2019/S2019847_0511/ACOUSTIC/GRIDDED/S2019847_0511_bottom.zarr"
---env PRED_FILE="/2019/S2019847_0511/ACOUSTIC/GRIDDED/S2019847_0511_labels.zarr"
---env MODELWEIGHTS="/paper_v2_heave_2.pt"
-unetprediction:latest
+docker run -it --rm --name unet -v "/mnt/c/DATAscratch/crimac-scratch/2019/S2019847_0511/ACOUSTIC/GRIDDED/":/datain -v "/mnt/c/DATAscratch/crimac-scratch/NR_Unet":/model -v "/mnt/c/DATAscratch/crimac-scratch/2019/S2019847_0511/ACOUSTIC/PREDICTIONS/":/dataout --security-opt label=disable --env MODEL="paper_v2_heave_2.pt" --env SURVEY=S2019847_0511 unet:latest
 ```
 
-```bash
-docker run -it --rm -v "/mnt/c/DATAscratch/crimac-scratch/":/datain -v "/mnt/c/DATAscratch/crimac-scratch/NR_Unet":/model -v "/mnt/c/DATAscratch/crimac-scratch/":/dataout --security-opt label=disable --env SV_FILE="/2019/S2019847_0511/ACOUSTIC/GRIDDED/S2019847_0511_sv.zarr" --env BOTTOM_FILE="/2019/S2019847_0511/ACOUSTIC/GRIDDED/S2019847_0511_bottom.zarr" --env PRED_FILE="/2019/S2019847_0511/ACOUSTIC/GRIDDED/S2019847_0511_labels.zarr" --env MODELWEIGHTS="/paper_v2_heave_2.pt" unet
-
-```
