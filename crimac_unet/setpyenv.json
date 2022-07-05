@@ -1,0 +1,10 @@
+{
+    "syspath": "~/repos/CRIMAC-classifiers-unet/crimac_unet/",
+    "path_to_echograms": "/mnt/c/DATAscratch/crimac-scratch/2019/S2019847_0511/ACOUSTIC/GRIDDED/",
+    "path_to_korona_data": "/mnt/c/DATAscratch/crimac-scratch/2019/S2019847_0511/ACOUSTIC/GRIDDED/",
+    "path_to_korona_transducer_depths": "/mnt/c/DATAscratch/crimac-scratch/2019/S2019847_0511/ACOUSTIC/GRIDDED/",
+    "path_to_trained_model": "/mnt/c/DATAscratch/crimac-scratch/NR_Unet/paper_v2_heave_2.pt",
+    "path_to_zarr_files": "/mnt/c/DATAscratch/crimac-scratch/2019/S2019847_0511/ACOUSTIC/GRIDDED/",
+    "path_for_saving_figs": "/mnt/c/DATAscratch/crimac-scratch/2019/S2019847_0511/ACOUSTIC/GRIDDED/",
+    "path_for_saving_preds_labels": "/mnt/c/DATAscratch/crimac-scratch/2019/S2019847_0511/ACOUSTIC/PREDICTIONS/"
+}
