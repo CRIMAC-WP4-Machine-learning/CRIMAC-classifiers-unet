@@ -681,7 +681,7 @@ class SegPipe():
             preds = np.moveaxis(preds, -1, 0).astype(np.float16)
 
             # Create xarray dataset
-            ds = xr.Dataset({'prediction': xr.DataArray(data=preds[1:, :, :], # Save sandeel and other predictions
+            ds = xr.Dataset({'annotation': xr.DataArray(data=preds[1:, :, :], # Save sandeel and other predictions
                                                         dims=['category', 'range', 'ping_time'],
                                                         coords={'category': [27, 1], # sandeel, other
                                                                 'range': survey.range_vector,
@@ -689,7 +689,7 @@ class SegPipe():
                                                                 })
 
                              },
-                            attrs={'description': 'predictions saved to zarr'}
+                            attrs={'description': f'{self.model_name} predictions'}
                             )
             ds.coords["raw_file"] = ("ping_time", [ech_name] * len(ds.ping_time))
 
