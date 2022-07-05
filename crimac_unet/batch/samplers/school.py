@@ -87,14 +87,17 @@ class SchoolZarr():
 
         self.schools = []
         self.n_schools = 0
+
+        # For each survey
         for idx, zarr_file in enumerate(self.zarr_files):
+            # Get dataframe with bboxes of fish schools
             df = zarr_file.get_fish_schools(category=fish_type)
 
-            bboxes = df[['startpingindex', 'endpingindex', 'upperdeptindex', 'lowerdeptindex']].values
+            # Extract bounding box indexes and append to array
+            bboxes = df[['startpingindex', 'endpingindex', 'upperdepthindex', 'lowerdepthindex']].values
 
             self.schools.append((zarr_file, bboxes))
             self.n_schools += bboxes.shape[0]
-
 
     def get_sample(self):
         # get random zarr file
@@ -104,7 +107,12 @@ class SchoolZarr():
         # get random bbox
         bbox = bboxes[np.random.randint(bboxes.shape[0])]
 
-        # get random x, y value from bounding box
+        # get random x, y value from bounding box. If bbox has width/height == 1, add 1 to avoid index error
+        if bbox[0] == bbox[1]:
+            bbox[1] += 1
+        if bbox[2] == bbox[3]:
+            bbox[2] += 1
+
         x = np.random.randint(bbox[0], bbox[1])  # ping dimension
         y = np.random.randint(bbox[2], bbox[3])  # range dimension
 

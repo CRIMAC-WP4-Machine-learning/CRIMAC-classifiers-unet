@@ -28,9 +28,9 @@ This repository contains scripts for:
               "path_to_korona_transducer_depths": "/dir_path/"
             }
     * `"path_to_echograms"`: Directory path to echogram folders stored in memmap format (optional if working with zarr files is wished)  
-    * `"path_to_zarr_files"`: Directory path to echogram folders stored in zarr format (optional if working with memmap files is wished)
+    * `"path_to_zarr_files"`: Directory path to echogram folders stored in zarr format (optional if working with memmap files is wished). In order to select on survey, use the following format: `crimac-scratch/2019/S2019847`. In order to select multiple surveys, add the path containing multiple surveys: `crimac-scratch/`.   
     * `"path_to_trained_model"`: Directory path to the trained model    
-    * `"path_for_saving_preds_labels"`: [Optional] Directory path for saving predictions and labels after training
+    * `"path_for_saving_preds_labels"`: [Optional] Directory path for saving predictions and labels after training. If prediction is run on multiple surveys, they will be saved in the indicated directory. If prediction is run on only one survey, the desired (zarr) file name of the prediction can be used, i.e.: `predictions\baseline_model_2019.zarr`. 
     * `"path_for_saving_figs"`: [Optional] Directory path for saving figures related to the evaluation of the model    
     * `"path_to_korona_data"`: [Optional] Directory path to Korona predictions (only used when working with memmap files)
     * `"path_to_korona_transducer_depths"`: [Optional] Directory path to Korona transducer depths (only used when working with memmap files)
@@ -53,8 +53,7 @@ This repository contains scripts for:
 ## Make predictions with a trained model without saving the results
 1. Set the following configuration options in the pipeline_config.yaml file:
     * 'data_mode' can be either 'zarr' (if working with zarr files) or 'memm' (if working with memmap files)
-    * 'frequencies' should be a list of frequencies the model is trained on ([18, 38, 120, 200] for the model from Olav's paper). 
-    * 'unit_frequency' should be set to 'Hz' if 'zarr' mode is selected and to 'kHz' if 'memm' is selected    
+    * 'frequencies' should be a list of frequencies the model is trained on ([18, 38, 120, 200] for the model from Olav's paper).   
     * 'partition_predict' can be 'selected surveys', 'single survey' or 'all surveys'
     * 'selected_surveys' should be a list of the names of the selected surveys. Should not be an empty list if the previous parameter ('partition_predict') is 'selected surveys' OR 'single survey'.
     * 'labels_available' can be set to True if the labels are wished to be visualized with the predictions
@@ -107,24 +106,11 @@ The predictions can be run from docker.
     ```
 
 ## Example
-
 ```bash
-export SURVEY='S2019847'
-export DATAIN='/localscratch_hdd/crimac'
-export DATAFILE='/2019/S2019847_0511/ACOUSTIC/GRIDDED/S2019847_0511_sv.zarr'
-export MODELWEIGTS='regriddingPaper_v1_baseline.pt'
-
-docker run --pgus all -it --rm --name unetpredictions:latest
--v "/localscratch_hdd/crimac/":/datain
--v "/localscratch_hdd/nilsolav/modelweights":/model
--v "/localscratch_hdd/nilsolav/"/:/dataout
---security-opt label=disable
---env DATA_INPUT_NAME="${SURVEY}_sv.zarr"
---env PRED_OUTPUT_NAME="${SURVEY}_labels_2.zarr"
-unetprediction
-
+docker build --tag unet .
 ```
 
 ```bash
-docker run -rm -it --name reportgenerator -v "$SURVEYDIR/ACOUSTIC/GRIDDED":/datain -v "$SURVEYDIR/ACOUSTIC/GRIDDED":/predin -v "$TMPSURVEY/ACOUSTIC/REPORTS"/:/dataout --security-opt label=disable --env DATA_INPUT_NAME="${SURVEY}_sv.zarr" --env PRED_INPUT_NAME="${SURVEY}_labels.zarr" --env OUTPUT_NAME="${SURVEY}_report_0.zarr" --env WRITE_PNG="${SURVEY}_report_0.png" --env THRESHOLD=0.8 --env MAIN_FREQ=38000 --env MAX_RANGE_SRC=500 --env HOR_INTEGRATION_TYPE=ping --env HOR_INTEGRATION_STEP=100 --env VERT_INTEGRATION_TYPE=range --env VERT_INTEGRATION_STEP=10 reportgenerator
+docker run -it --rm --name unet -v "/mnt/c/DATAscratch/crimac-scratch/2019/S2019847_0511/ACOUSTIC/GRIDDED/":/datain -v "/mnt/c/DATAscratch/crimac-scratch/NR_Unet":/model -v "/mnt/c/DATAscratch/crimac-scratch/2019/S2019847_0511/ACOUSTIC/PREDICTIONS/":/dataout --security-opt label=disable --env MODEL="paper_v2_heave_2.pt" --env SURVEY=S2019847_0511 unet:latest
 ```
+

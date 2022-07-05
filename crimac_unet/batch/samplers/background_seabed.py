@@ -83,5 +83,4 @@ class BackgroundSeabedZarr():
         if np.any(labels != 0): # Possible bottleneck
             return self.get_sample()
 
-
         return [x, y], zarr_rand
