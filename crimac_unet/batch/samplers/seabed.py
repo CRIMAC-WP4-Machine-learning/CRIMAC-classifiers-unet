@@ -66,6 +66,9 @@ class SeabedZarr():
         # Get y-loc at seabed
         y = int(zarr_rand.get_seabed(x))
 
+        if y <= 0:
+            return self.get_sample()
+
         # "adjust" y so that seabed is not always in the middle of the crop
         y += np.random.randint(-self.window_size[1]//2, self.window_size[1]//2 + 1)
 

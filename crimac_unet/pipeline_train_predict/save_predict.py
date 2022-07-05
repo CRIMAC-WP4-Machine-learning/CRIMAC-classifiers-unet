@@ -18,7 +18,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
 
 import time
 import numpy as np
-from pipeline_train_predict.pipeline import Config_Options, SegPipeUNet
+from pipeline_train_predict.pipeline import Config_Options, DataMemm, DataZarr, SegPipeUNet
 from paths import *
 
 if __name__ == '__main__':
@@ -27,13 +27,17 @@ if __name__ == '__main__':
     configuration = pipeline_config()
     opt = Config_Options(configuration)
 
+    if opt.data_mode == 'zarr':
+        data_obj = DataZarr(opt)
+    elif opt.data_mode == 'memm':
+        data_obj = DataMemm(opt)
+
     segpipe = SegPipeUNet(opt)
     # Save segmentation predictions
     print("Save predictions")
     start = time.time()
     if opt.data_mode == 'zarr':
-        segpipe.save_segmentation_predictions_in_zarr(selected_surveys=opt.selected_surveys,
-                                                  resume=opt.resume_writing)
+        segpipe.save_segmentation_predictions_zarr(data_obj, resume=opt.resume_writing)
     else:
-        segpipe.save_segmentation_predictions_sandeel(selected_surveys=opt.selected_surveys)
+        segpipe.save_segmentation_predictions_memm(data_obj)
     print(f"Executed time for saving all prediction (h): {np.round((time.time() - start) / 3600, 2)}")

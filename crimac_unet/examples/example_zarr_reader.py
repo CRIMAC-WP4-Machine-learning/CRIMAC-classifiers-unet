@@ -1,4 +1,6 @@
 import os
+import sys
+sys.path.append("../data")
 
 from data.echogram import DataReaderZarr
 

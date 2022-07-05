@@ -2,14 +2,12 @@
 
 # Input data type (Options: zarr or memm)
 data_mode: 'zarr'
-# Frequency unit (Options: Hz or KHz)
-unit_frequency: 'Hz'
 # Frequencies used for training and predictions
 frequencies: [18, 38, 120, 200]
 # Cuda device id (default: 0) if not available cpu is used
-dev: 2
+dev: 1
 # Number of data loading workers (default: 10)
-num_workers: 10
+num_workers: 20
 # The height / width of the input image patch to network (default: 256)
 window_dim: 256
 # Input batch size (default: 16)
@@ -27,12 +25,13 @@ log_step: 1000
 # Number of batches to wait before updating learning rate (default: 1000)
 lr_step: 1000
 # Number of training batches (default: 10000)
-iterations: 500
+iterations: 2000
 # Partitioning of training data (Options: random, selected surveys, single survey, all surveys - default: 'all surveys')
 partition: 'selected surveys'
-# If partition is selected_surveys, used this partition during training
-train_surveys: [2011, 2012, 2013, 2014, 2015, 2016]
-val_surveys: [2017]
+# List with the names of the selected surveys for training. For memmap: survey years. For zarr: Survey names (ie 'S2007205')
+train_surveys: ['S2011206', 'S2013842', 'S2014807', 'S2015837', 'S2016837']
+# List of validation survey
+val_surveys: ['S2017843']
 # Whether to use save the trained model
 save_model_params: True
 
@@ -40,12 +39,14 @@ save_model_params: True
 
 # Evaluation model (Options: all, region, fish - default:'all')
 eval_mode: 'all'
+# Model to evaluate (ensemble)
+model_names: []
 # Partitioning of the data for the inference (Options: selected surveys, single survey, all surveys - default: 'all surveys')
-partition_predict: 'selected surveys'
+partition_predict: 'all surveys'
 # List with the names of the selected survey
-selected_surveys: ['S2019847']
+selected_surveys: []
 # List with strings referring to colors
-colors_list: []
+colors_list: ['blue']
 # Whether to save the labels
 save_labels: True
 # Whether the labels are available

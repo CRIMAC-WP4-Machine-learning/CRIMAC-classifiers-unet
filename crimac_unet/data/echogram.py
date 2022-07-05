@@ -56,9 +56,9 @@ class Echogram():
 
         self.path = path
         self.name = os.path.split(path)[-1]
-        self.frequencies  = load_meta(path, 'frequencies').squeeze().astype(int)
-        self.range_vector = load_meta(path, 'range_vector').squeeze()
-        self.time_vector  = load_meta(path, 'time_vector').squeeze()
+        self.frequencies  = np.array(load_meta(path, 'frequencies')).squeeze().astype(int)
+        self.range_vector = np.array(load_meta(path, 'range_vector')).squeeze()
+        self.time_vector  = np.array(load_meta(path, 'time_vector')).squeeze()
         self.heave = load_meta(path, 'heave').squeeze()
         self.data_dtype = load_meta(path, 'data_dtype')
         self.label_dtype = load_meta(path, 'label_dtype')
@@ -443,23 +443,24 @@ class Echogram():
 class DataReaderZarr():
     """
     Data reader for zarr files. Expectation is that the zarr file contains data from one year only
+    :param path: path to survey directory (i.e. /cruise_data/2017/S2017843)
     """
 
-    def __init__(self, path, verbose=False):
-        # Load data
-        self.ds = xr.open_zarr(path, chunks={'frequency': 'auto'})
-
-        # Paths to other files
+    def __init__(self, path):
+        # Get all paths
         self.path = os.path.abspath(path)
-        self.name = os.path.basename(self.path).split('.')[0].replace('_sv', '')
-
-        self.annotation_path = os.path.join(os.path.split(self.path)[0], f'{self.name}_labels.zarr')
-        self.seabed_path = os.path.join(os.path.split(self.path)[0], f'{self.name}_bottom.zarr')
-        self.work_path = os.path.join(os.path.split(self.path)[0], f'{self.name}_labels.parquet')
-        self.objects_df_path = os.path.join(os.path.split(self.path)[0], f'{self.name}_labels.parquet.csv')
+        self.name = os.path.split(self.path)[-1]
+        self.sv_path = os.path.join(*[self.path, 'ACOUSTIC', 'GRIDDED', f'{self.name}_sv.zarr'])
+        self.annotation_path = os.path.join(*[self.path, 'ACOUSTIC', 'GRIDDED', f'{self.name}_labels.zarr'])
+        self.seabed_path = os.path.join(*[self.path, 'ACOUSTIC', 'GRIDDED', f'{self.name}_bottom.zarr'])
+        self.work_path = os.path.join(*[self.path, 'ACOUSTIC', 'GRIDDED', f'{self.name}_labels.parquet'])
+        self.objects_df_path = os.path.join(*[self.path, 'ACOUSTIC', 'GRIDDED', f'{self.name}_labels.parquet.csv'])
         self.data_format = 'zarr'
 
-        # Coordinates
+        # Load data
+        self.ds = xr.open_zarr(self.sv_path, chunks={'frequency': 'auto'})
+
+        # Read coordinates
         self.frequencies = self.ds.frequency.astype(np.int)
         self.heave = self.ds.heave
         self.channel_id = self.ds.get('channelID')
@@ -470,23 +471,24 @@ class DataReaderZarr():
         self.year = int(self.ds.ping_time[0].dt.year)
         self.date_range = (self.ds.ping_time[0], self.ds.ping_time[-1])
         self.shape = (self.ds.sizes['ping_time'], self.ds.sizes['range'])
-
         self.raw_file = self.ds.raw_file  # List of raw files, length = nr of pings
         self.raw_file_included = np.unique(self.ds.raw_file.values)  # list of unique raw files contained in zarr file
+        self.raw_file_excluded = []
+        self.raw_file_start = None
 
         # Used for seabed estimation
         transducer_offset = self.ds.transducer_draft.mean()
         self.transducer_offset_pixels = int(transducer_offset/(self.range_vector.diff(dim='range').mean()).values)
 
-        # load annotations files
-        self.annot = None
+        # Load annotations files
+        self.annotation = None
         if os.path.isdir(self.annotation_path):
-            self.annot = xr.open_zarr(self.annotation_path)
-            self.labels = self.annot.annotation
-            self.objects = self.annot.object
+            self.annotation = xr.open_zarr(self.annotation_path)
+            self.labels = self.annotation.annotation
+            self.objects = self.annotation.object
 
             # Fish categories used in survey
-            self.fish_categories = [cat for cat in self.annot.category.values if cat != -1]
+            self.fish_categories = [cat for cat in self.annotation.category.values if cat != -1]
         else:
             print(f' No annotation file found at {self.annotation_path}')
 
@@ -495,10 +497,8 @@ class DataReaderZarr():
         if os.path.isdir(self.seabed_path):
             self.seabed = xr.open_zarr(self.seabed_path)
 
-        # Load objects list
+        # Objects dataframe
         self.objects_df = None
-        if os.path.isfile(self.objects_df_path):# and os.path.isfile(self.work_path):
-            self.objects_df = pd.read_csv(self.objects_df_path, index_col=None)
 
     def get_ping_index(self, ping_time):
         """
@@ -521,17 +521,75 @@ class DataReaderZarr():
         :param category: Categories to include ('all', or list)
         :return: dataframe with bounding boxes
         """
-        if self.objects_df is None:
-            raise FileNotFoundError(f'No objects file at {self.objects_df_path}')
-
-
+        df = self.get_objects_file()
         if category == 'all':
             category = self.fish_categories
 
         if not isinstance(category, (list, np.ndarray)):
             category = [category]
 
-        return self.objects_df.loc[self.objects_df.category.isin(category)]
+        return df.loc[(df.category.isin(category)) & (df.valid_object)]
+
+    def get_objects_file(self):
+        """
+        Get or compute dataframe with bounding box indexes for all fish schools
+        :return: Pandas dataframe with object info and bounding boxes
+        """
+        if self.objects_df is not None:
+            return self.objects_df
+
+        parsed_objects_file_path = os.path.join(os.path.split(self.objects_df_path)[0],
+                                                self.name + '_objects_parsed.csv')
+
+        if os.path.isfile(parsed_objects_file_path):
+            return pd.read_csv(parsed_objects_file_path, index_col=0)
+        elif os.path.isfile(self.objects_df_path) and os.path.isfile(self.work_path):
+            print('Generating objects file with seabed distances ... ')
+
+            # Create parsed objects file from object file and work file
+            df = pd.read_csv(self.objects_df_path, header=0)
+            df = df.rename(columns={"upperdept": "upperdepth",
+                                    "lowerdept": "lowerdepth",
+                                    "upperdeptindex": "upperdepthindex",
+                                    "lowerdeptindex": "lowerdepthindex"})
+
+            categories = df.category.values
+            upperdeptindices = df.upperdepthindex.values
+            lowerdeptindices = df.lowerdepthindex.values
+            startpingindices = df.startpingindex.values
+            endpingindices = df.endpingindex.values
+
+            distance_to_seabed = np.zeros_like(upperdeptindices, dtype=np.float32)
+            distance_to_seabed[:] = np.nan
+            valid_object = np.zeros_like(upperdeptindices, dtype='bool')
+
+            assert len(df['object']) == len(df), print('Object IDs not unique!')
+            #
+            for idx, (category, upperdeptindex, lowerdeptindex, startpingindex, endpingindex) in \
+                enumerate(zip(categories, upperdeptindices, lowerdeptindices, startpingindices, endpingindices)):
+
+                # Skip objects with ping errors og of category -1
+                # TODO better solution for this? Fix ping errors?
+                if startpingindex > endpingindex or category == -1:
+                    valid_object[idx] = False
+                    continue
+
+                # Add distance to seabed
+                if os.path.isdir(self.seabed_path):
+                    center_ping_idx = startpingindex + int((endpingindex - startpingindex)/2)
+                    distance_to_seabed[idx] = self.get_seabed(center_ping_idx) - lowerdeptindex
+
+                valid_object[idx] = True
+
+            # # Save parsed objecs file
+            df['distance_to_seabed'] = distance_to_seabed
+            df['valid_object'] = valid_object
+            df.to_csv(parsed_objects_file_path)
+            self.objects_df = df
+            return df
+        else:
+            # Cannot return object file
+            raise FileNotFoundError(f'Cannot compute objects dataframe from {self.objects_df_path} and {self.work_path}')
 
     def get_data_slice(self, idx_ping: (int, None) = None, n_pings: (int, None) = None, idx_range: (int, None) = None, n_range: (int, None) = None,
                   frequencies: (int, list, None) = None, drop_na=False, return_numpy=True):
@@ -587,8 +645,8 @@ class DataReaderZarr():
             return data
 
     def get_label_slice(self, idx_ping: int, n_pings: int, idx_range: (int, None) = None, n_range: (int, None) = None,
-                        drop_na=False, categories=None, return_numpy=True,
-                        mask=True, ignore=False):
+                        drop_na=False, categories=None, return_numpy=True, correct_transducer_offset=False,
+                        mask=True):
         """
         Get slice of labels
         :param idx_ping: (int) Index of start ping
@@ -620,10 +678,7 @@ class DataReaderZarr():
         label_slice = self.labels.isel(ping_time=slice_ping_time, range=slice_range)
 
         if mask:
-            if ignore:
-                labels = label_slice.sel(category=-1)
-            else:
-                labels = xr.zeros_like(label_slice.sel(category=-1))
+            labels = label_slice.sel(category=-1)
 
             #labels = self.labels.sel(category=categories[0]).isel(ping_time=slice_ping_time, range=slice_range) * categories[0]
             for cat in categories:
@@ -641,6 +696,7 @@ class DataReaderZarr():
             return labels.values
         else:
             return labels
+
 
     def get_seabed_mask(self, idx_ping: int, n_pings: int, idx_range: (int, None) = None, n_range: (int, None) = None,
                         return_numpy=True, correct_transducer_offset=True):
@@ -736,6 +792,7 @@ class DataReaderZarr():
                   frequencies=None,
                   draw_seabed=True,
                   show_labels=True,
+                  preds=None,
                   data_transform=db):
         """
         Visualize data from xarray
@@ -773,7 +830,10 @@ class DataReaderZarr():
             data = data_transform(data)
 
         # Initialize plot
-        fig, axs = plt.subplots(ncols=1, nrows=len(frequencies) + int(show_labels), figsize=(16, 16), sharex=True)
+        nrows = len(frequencies) + int(show_labels)
+        if preds is not None:
+            nrows += 1
+        fig, axs = plt.subplots(ncols=1, nrows=nrows, figsize=(16, 16), sharex=True)
         axs = axs.ravel()
         plt.tight_layout()
 
@@ -792,14 +852,14 @@ class DataReaderZarr():
 
 
         # Format settings
-        cmap_labels = mcolors.ListedColormap(['yellow', 'black', 'red', 'green'])
+        cmap_labels = mcolors.ListedColormap(['yellow', 'black', 'green', 'red']) # green = other, red = sandeel
         boundaries_labels = [-200, -0.5, 0.5, 1.5, 2.5]
         norm_labels = mcolors.BoundaryNorm(boundaries_labels, cmap_labels.N, clip=True)
 
         # Get seabed
         if draw_seabed:
-            seabed = self.get_seabed(idx_ping=ping_idx, n_pings=n_pings)
-            seabed[seabed > data.shape[-1]] = data.shape[-1] - 1
+            seabed = self.get_seabed(idx_ping=ping_idx, n_pings=n_pings, idx_range=range_idx, n_range=n_range).astype(np.float)
+            seabed[seabed >= data.shape[-1]] = None
 
         # Plot data
         for i in range(data.shape[0]):
@@ -815,11 +875,19 @@ class DataReaderZarr():
             labels = labels[:, :data.shape[-1]]
             axs[i+1].imshow(labels.T, cmap=cmap_labels, norm=norm_labels, aspect='auto')
             axs[i+1].set_ylabel('Range (m)')
+            axs[i+1].set_title('Annotations')
 
         # Optionally draw seabed
         if draw_seabed:
             for ax in axs:
-                ax.plot(np.arange(data.shape[1]), seabed, c='white', lw=2)
+                ax.plot(np.arange(data.shape[1]), seabed, c='white', lw=1)
+
+        if preds is not None:
+            # extract sandeel slice
+            axs[i+2].clear()
+            pred_numpy = preds.pred_sandeel[range_idx:range_idx+n_range, ping_idx:ping_idx+n_pings].values
+            axs[i+2].imshow(pred_numpy.astype(np.float32), cmap='twilight_shifted', vmin=0, vmax=1, aspect='auto')
+            axs[i+2].set_title('Prediction (sandeel)')
 
         plt.xlabel('Ping time')
         plt.show()
@@ -934,12 +1002,12 @@ class DataReaderZarr():
                     self.ds["labels"].loc[row['pingTime'], x0:x1] = fish_id
 
 
-def get_zarr_files(years, frequencies=[18, 38, 120, 200], minimum_shape=256, path_to_zarr_files=None):
+def get_zarr_files(years='all', frequencies=[18, 38, 120, 200], minimum_shape=256, path_to_zarr_files=None):
     if path_to_zarr_files is None:
         path_to_zarr_files = paths.path_to_zarr_files()
 
-    zarr_files = sorted([z_file for z_file in glob(path_to_zarr_files+'/**/*sv.zarr', recursive=True)])
-    zarr_readers = [DataReaderZarr(zarr_file) for zarr_file in zarr_files]
+    surveys = sorted(glob(os.path.join(path_to_zarr_files, '**/ACOUSTIC/GRIDDED/'), recursive=True))
+    zarr_readers = [DataReaderZarr(survey.replace('/ACOUSTIC/GRIDDED/', '')) for survey in surveys]
 
     # Filter on frequencies
     zarr_readers = [z for z in zarr_readers if all([f in z.frequencies for f in frequencies])]

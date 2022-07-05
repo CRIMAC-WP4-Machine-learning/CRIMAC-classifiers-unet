@@ -38,6 +38,7 @@ def plot_patch(data, labels, transform=db):
     if transform is not None:
         data = transform(data)
 
+    # Plot data
     for i in range(data.shape[0]):
         # plot 38 kHz frequency
         axs[i+1].imshow(data[i, :, :], cmap='jet', vmax=0, vmin=-75)

@@ -70,20 +70,11 @@ class SchoolSeabedZarr():
         for idx, zarr_file in enumerate(self.zarr_files):
             df = zarr_file.get_fish_schools(category=fish_type)
 
-            all_bboxes = df[['startpingindex', 'endpingindex', 'upperdeptindex', 'lowerdeptindex']].values
-            bboxes = []
-
             # Filter on distance to seabed
-            for row in all_bboxes:
+            df = df.loc[df.distance_to_seabed < max_dist_to_seabed]
+            bboxes = df[['startpingindex', 'endpingindex', 'upperdepthindex', 'lowerdepthindex']].values
 
-                mid_ping = int(np.mean(row[:2]))
-                seabed = zarr_file.get_seabed(mid_ping)
-                dist_seabed = seabed - row[-1]
-
-                if dist_seabed < max_dist_to_seabed:
-                    bboxes.append(row)
-
-            self.schools.append((zarr_file, np.array(bboxes)))  # object id is not needed
+            self.schools.append((zarr_file, bboxes))  # object id is not needed
 
 
     def get_sample(self):
@@ -95,6 +86,10 @@ class SchoolSeabedZarr():
         bbox = bboxes[np.random.randint(bboxes.shape[0])]
 
         # get random x, y value from bounding box
+        if bbox[0] == bbox[1]:
+            bbox[1] += 1
+        if bbox[2] == bbox[3]:
+            bbox[2] += 1
         x = np.random.randint(bbox[0], bbox[1])  # ping dimension
         y = np.random.randint(bbox[2], bbox[3])  # range dimension
 

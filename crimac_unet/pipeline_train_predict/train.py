@@ -20,6 +20,7 @@ import time
 import numpy as np
 from pipeline_train_predict.pipeline import Config_Options, DataMemm, DataZarr, SegPipeUNet
 from paths import *
+from utils.logger import TensorboardLogger
 
 
 if __name__ == '__main__':
@@ -33,18 +34,14 @@ if __name__ == '__main__':
     elif opt.data_mode == 'memm':
         data_obj = DataMemm(opt)
 
-    print("Preparing data samplers")
-    start = time.time()
-    samplers_train, samplers_test, sampler_probs = data_obj.sample_data()
-    print(f"Executed time for preparing samples (s): {np.round((time.time() - start), 2)}")
 
-    print("Preparing data loaders")
-    start = time.time()
     segpipe = SegPipeUNet(opt)
-    dataloader_train, dataloader_test = segpipe.define_data_loaders(samplers_train, samplers_test, sampler_probs)
-    print(f"Executed time for preparing data loaders (s): {np.round((time.time() - start), 2)}")
 
     print("Start training")
+    logger = TensorboardLogger(name=segpipe.model_name,
+                               log_dir='/'.join(segpipe.path_model_params.split('/')[:-1]) + '/log/',
+                               include_datetime=False)
     start = time.time()
-    segpipe.train_model(dataloader_train, dataloader_test)
+    segpipe.train_model(data_obj, logger)
     print(f"Executed time for training (h): {np.round((time.time() - start) / 3600, 2)}")
+    logger.close()
