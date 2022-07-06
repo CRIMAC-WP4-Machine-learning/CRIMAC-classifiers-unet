@@ -10,7 +10,7 @@ import os
 SV_FILE = '/datain/'
 BOTTOM_FILE = '/datain/'
 PRED_DIR = '/dataout/'
-PRED_FILE = PRED_DIR+ os.getenv('ZARRFILE')
+PRED_FILE = PRED_DIR + os.getenv('ZARRFILE')
 MODELWEIGHTS = '/model/'+os.getenv('MODEL')
 SURVEY = os.getenv('SURVEY')
 
@@ -43,7 +43,7 @@ from paths import *
 from pipeline_train_predict.pipeline import Config_Options, SegPipeUNet, pipeline_config, DataZarr
 from data.echogram import get_data_readers
 
-# Check paths 
+# Check paths
 print(' ')
 print('Check paths:')
 print('path_to_echograms: '+path_to_echograms())
@@ -73,4 +73,8 @@ print("Save predictions")
 start = time.time()
 segpipe.save_segmentation_predictions_zarr(data_obj, resume=opt.resume_writing)
 
+<<<<<<< HEAD
 print(f"Executed time for saving all prediction (h): {np.round((time.time() - start) / 3600, 2)}")
+=======
+print(f"Executed time for saving all prediction (h): {np.round((time.time() - start) / 3600, 2)}")
+>>>>>>> master
