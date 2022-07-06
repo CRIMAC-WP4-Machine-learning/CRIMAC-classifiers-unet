@@ -39,34 +39,37 @@ with open("/crimac_unet/setpyenv.json", "w") as fp:
 
 # Set the correct paths to the files
 from paths import *
-from pipeline_train_predict.pipeline import Config_Options, SegPipeUNet, pipeline_config
+from pipeline_train_predict.pipeline import Config_Options, SegPipeUNet, pipeline_config, DataZarr
 from data.echogram import get_data_readers
 
 # Check paths 
 print(' ')
 print('Check paths:')
-print(path_to_echograms())
-print(path_to_korona_data())
-print(path_to_korona_transducer_depths())
-print(path_to_trained_model())
-print(path_to_zarr_files())
+print('path_to_echograms: '+path_to_echograms())
+print('path_to_korona_data: '+path_to_korona_data())
+print('path_to_korona_transducer_depths: '+path_to_korona_transducer_depths())
+print('path_to_trained_model: '+path_to_trained_model())
+print('path_to_zarr_files: '+path_to_zarr_files()+' Content:')
 print(os.listdir(path_to_zarr_files()))
-print(path_for_saving_figs())
+print('path_for_saving_figs: '+path_for_saving_figs()+' Content:')
 print(os.listdir(path_for_saving_preds_labels()))
 
 # Configuration options dictionary
 configuration = pipeline_config()
 configuration['selected_surveys'] = [SURVEY]
+print(' ')
+print('configuration:')
 print(configuration)
 
 # Create options instance
 opt = Config_Options(configuration)
 
 # Set up the code
+data_obj = DataZarr(opt)
 segpipe = SegPipeUNet(opt)
-
-# Run prediction adn save segmentation predictions
+# Save segmentation predictions
 print("Save predictions")
 start = time.time()
-segpipe.save_segmentation_predictions_in_zarr(selected_surveys=opt.selected_surveys, resume=opt.resume_writing)
+segpipe.save_segmentation_predictions_zarr(data_obj, resume=opt.resume_writing)
+
 print(f"Executed time for saving all prediction (h): {np.round((time.time() - start) / 3600, 2)}")
