@@ -9,7 +9,8 @@ import os
 # Get the environmental variables passed on from the container
 SV_FILE = '/datain/'
 BOTTOM_FILE = '/datain/'
-PRED_FILE = '/dataout/'
+PRED_DIR = '/dataout/'
+PRED_FILE = PRED_DIR+ os.getenv('ZARRFILE')
 MODELWEIGHTS = '/model/'+os.getenv('MODEL')
 SURVEY = os.getenv('SURVEY')
 
@@ -19,8 +20,8 @@ print(' ')
 print('Files:')
 print('sv file:'+SV_FILE+' exists:'+ str(os.path.isdir(SV_FILE)))
 print('Bottom file dir:'+BOTTOM_FILE+' exists:'+str(os.path.isdir(BOTTOM_FILE)))
-print('Prediction dir:'+PRED_FILE+' exists:'+str(os.path.isdir(PRED_FILE)))
 print('Models weights file:'+MODELWEIGHTS+' exists:'+str(os.path.isfile(MODELWEIGHTS)))
+print('Prediction dir:'+PRED_DIR+' exists:'+str(os.path.isdir(PRED_DIR)))
 
 # The file locations are coded in the setpyenv file
 setpyenv = {
@@ -30,7 +31,7 @@ setpyenv = {
     "path_to_korona_transducer_depths": SV_FILE,
     "path_to_trained_model": MODELWEIGHTS,
     "path_to_zarr_files": SV_FILE,
-    "path_for_saving_figs": PRED_FILE,
+    "path_for_saving_figs": PRED_DIR,
     "path_for_saving_preds_labels": PRED_FILE}
 
 # Write setpyenv file based on environmental variables
@@ -52,7 +53,7 @@ print('path_to_trained_model: '+path_to_trained_model())
 print('path_to_zarr_files: '+path_to_zarr_files()+' Content:')
 print(os.listdir(path_to_zarr_files()))
 print('path_for_saving_figs: '+path_for_saving_figs()+' Content:')
-print(os.listdir(path_for_saving_preds_labels()))
+print('path_for_saving_preds_labels: '+path_for_saving_preds_labels())
 
 # Configuration options dictionary
 configuration = pipeline_config()
