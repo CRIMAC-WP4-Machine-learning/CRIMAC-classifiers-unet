@@ -448,14 +448,15 @@ class DataReaderZarr():
 
     def __init__(self, path):
         # Get all paths
-        self.path = os.path.abspath(path)
-        self.name = os.path.split(self.path)[-1]
-        self.sv_path = os.path.join(*[self.path, 'ACOUSTIC', 'GRIDDED', f'{self.name}_sv.zarr'])
-        self.annotation_path = os.path.join(*[self.path, 'ACOUSTIC', 'GRIDDED', f'{self.name}_labels.zarr'])
-        self.seabed_path = os.path.join(*[self.path, 'ACOUSTIC', 'GRIDDED', f'{self.name}_bottom.zarr'])
-        self.work_path = os.path.join(*[self.path, 'ACOUSTIC', 'GRIDDED', f'{self.name}_labels.parquet'])
-        self.objects_df_path = os.path.join(*[self.path, 'ACOUSTIC', 'GRIDDED', f'{self.name}_labels.parquet.csv'])
+        self.sv_path = os.path.abspath(path)
+        self.name = os.path.split(self.sv_path)[-1].replace('_sv.zarr', '')
+        self.path = os.path.split(self.sv_path)[0]
+        self.annotation_path = os.path.join(*[self.path, f'{self.name}_labels.zarr'])
+        self.seabed_path = os.path.join(*[self.path, f'{self.name}_bottom.zarr'])
+        self.work_path = os.path.join(*[self.path, f'{self.name}_labels.parquet'])
+        self.objects_df_path = os.path.join(*[self.path, f'{self.name}_labels.parquet.csv'])
         self.data_format = 'zarr'
+        assert os.path.isdir(self.sv_path), f"No Sv data found at {self.sv_path}"
 
         # Load data
         self.ds = xr.open_zarr(self.sv_path, chunks={'frequency': 'auto'})
@@ -1006,8 +1007,9 @@ def get_zarr_files(years='all', frequencies=[18, 38, 120, 200], minimum_shape=25
     if path_to_zarr_files is None:
         path_to_zarr_files = paths.path_to_zarr_files()
 
-    surveys = sorted(glob(os.path.join(path_to_zarr_files, '**/ACOUSTIC/GRIDDED/'), recursive=True))
-    zarr_readers = [DataReaderZarr(survey.replace('/ACOUSTIC/GRIDDED/', '')) for survey in surveys]
+    zarr_files = sorted([z_file for z_file in glob(path_to_zarr_files + '/**/*sv.zarr', recursive=True)])
+    assert len(zarr_files) > 0, f"No survey data found at {path_to_zarr_files}"
+    zarr_readers = [DataReaderZarr(zarr_file) for zarr_file in zarr_files]
 
     # Filter on frequencies
     zarr_readers = [z for z in zarr_readers if all([f in z.frequencies for f in frequencies])]
