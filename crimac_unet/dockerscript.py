@@ -73,8 +73,4 @@ print("Save predictions")
 start = time.time()
 segpipe.save_segmentation_predictions_zarr(data_obj, resume=opt.resume_writing)
 
-<<<<<<< HEAD
 print(f"Executed time for saving all prediction (h): {np.round((time.time() - start) / 3600, 2)}")
-=======
-print(f"Executed time for saving all prediction (h): {np.round((time.time() - start) / 3600, 2)}")
->>>>>>> master
