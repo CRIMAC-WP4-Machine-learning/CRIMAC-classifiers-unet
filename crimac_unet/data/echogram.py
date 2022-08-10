@@ -887,7 +887,7 @@ class DataReaderZarr():
         if predictions is not None:
             if type(predictions) != np.ndarray:
                 predictions = predictions.annotation.sel(category=27)[range_idx:range_idx + n_range,
-                             ping_idx:ping_idx + n_pings]
+                             ping_idx:ping_idx + n_pings].values.astype(np.float32)
 
             # crop predictions (since we cut nans from the data)
             predictions = predictions[:data.shape[-1], :]
