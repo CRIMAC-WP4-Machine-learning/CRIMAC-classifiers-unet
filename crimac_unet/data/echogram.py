@@ -735,7 +735,7 @@ class DataReaderZarr():
         else:
             return seabed_slice
 
-    def get_seabed(self, idx_ping: int, n_pings: (int) = 1):
+    def get_seabed(self, idx_ping: int, n_pings: (int) = 1, idx_range: (int, None) = None, n_range: (int, None) = None):
         """
         Get vector of range indices for the seabed
         WARNING slow for large stretches of data
@@ -746,7 +746,7 @@ class DataReaderZarr():
         """
 
         # Get seabed mask for the specified pings
-        seabed_mask = self.get_seabed_mask(idx_ping, n_pings, return_numpy=True)
+        seabed_mask = self.get_seabed_mask(idx_ping, n_pings, idx_range, n_range, return_numpy=True)
 
         # Find indexes with non-zero values
         seabed_idx = np.argwhere(seabed_mask>0)
@@ -793,7 +793,7 @@ class DataReaderZarr():
                   frequencies=None,
                   draw_seabed=True,
                   show_labels=True,
-                  preds=None,
+                  predictions=None,
                   data_transform=db):
         """
         Visualize data from xarray
@@ -805,12 +805,13 @@ class DataReaderZarr():
         :param frequencies: Frequencies to visualize (list)
         :param draw_seabed: Draw seabed on plots (bool)
         :param show_labels: Show annotation (bool)
+        :param predictions: Predictions data variables should follow annotation format or be presented as a numpy array (xarray.Dataset, numpy.ndarray)
         :param data_transform: Data transform before visualization (db transform recommended) (function)
         """
 
         # Visualize data from a single raw file
         if raw_file is not None:
-            idxs = np.argwhere(self.raw_file.values == raw_file + '.raw').ravel()
+            idxs = np.argwhere(self.raw_file.values == raw_file).ravel()
             ping_idx = idxs[0]
             n_pings = len(idxs)
 
@@ -832,7 +833,7 @@ class DataReaderZarr():
 
         # Initialize plot
         nrows = len(frequencies) + int(show_labels)
-        if preds is not None:
+        if predictions is not None:
             nrows += 1
         fig, axs = plt.subplots(ncols=1, nrows=nrows, figsize=(16, 16), sharex=True)
         axs = axs.ravel()
@@ -883,11 +884,16 @@ class DataReaderZarr():
             for ax in axs:
                 ax.plot(np.arange(data.shape[1]), seabed, c='white', lw=1)
 
-        if preds is not None:
-            # extract sandeel slice
-            axs[i+2].clear()
-            pred_numpy = preds.pred_sandeel[range_idx:range_idx+n_range, ping_idx:ping_idx+n_pings].values
-            axs[i+2].imshow(pred_numpy.astype(np.float32), cmap='twilight_shifted', vmin=0, vmax=1, aspect='auto')
+        if predictions is not None:
+            if type(predictions) != np.ndarray:
+                predictions = predictions.annotation.sel(category=27)[range_idx:range_idx + n_range,
+                             ping_idx:ping_idx + n_pings]
+
+            # crop predictions (since we cut nans from the data)
+            predictions = predictions[:data.shape[-1], :]
+
+            assert predictions.shape == data[0, :, :].T.shape, print(f"Prediction shape {predictions.shape} does not match data shape {data.T.shape}")
+            axs[i+2].imshow(predictions, cmap='twilight_shifted', vmin=0, vmax=1, aspect='auto')
             axs[i+2].set_title('Prediction (sandeel)')
 
         plt.xlabel('Ping time')
