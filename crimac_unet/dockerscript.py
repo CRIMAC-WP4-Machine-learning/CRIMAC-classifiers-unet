@@ -55,6 +55,8 @@ print(os.listdir(path_to_zarr_files()))
 print('path_for_saving_figs: '+path_for_saving_figs()+' Content:')
 print('path_for_saving_preds_labels: '+path_for_saving_preds_labels())
 
+print(' ')
+
 # Configuration options dictionary
 configuration = pipeline_config()
 configuration['selected_surveys'] = [SURVEY]
