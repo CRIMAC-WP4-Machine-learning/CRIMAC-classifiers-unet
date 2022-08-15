@@ -56,6 +56,7 @@ print('path_for_saving_figs: '+path_for_saving_figs()+' Content:')
 print('path_for_saving_preds_labels: '+path_for_saving_preds_labels())
 
 print(' ')
+print('CUDA is avaialable: '+ str(torch.cuda.is_available()))
 
 # Configuration options dictionary
 configuration = pipeline_config()
