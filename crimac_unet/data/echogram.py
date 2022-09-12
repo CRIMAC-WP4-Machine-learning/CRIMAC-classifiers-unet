@@ -1009,11 +1009,13 @@ class DataReaderZarr():
                     self.ds["labels"].loc[row['pingTime'], x0:x1] = fish_id
 
 
-def get_zarr_files(years='all', frequencies=[18, 38, 120, 200], minimum_shape=256, path_to_zarr_files=None):
+def get_zarr_files(years='all', frequencies=np.array([18, 38, 120, 200])*1000, minimum_shape=256, path_to_zarr_files=None):
     if path_to_zarr_files is None:
         path_to_zarr_files = paths.path_to_zarr_files()
 
+    path_to_zarr_files = "/lokal_uten_backup/pro/COGMAR/zarr_data_may22/"
     zarr_files = sorted([z_file for z_file in glob(path_to_zarr_files + '/**/*sv.zarr', recursive=True)])
+
     assert len(zarr_files) > 0, f"No survey data found at {path_to_zarr_files}"
     zarr_readers = [DataReaderZarr(zarr_file) for zarr_file in zarr_files]
 

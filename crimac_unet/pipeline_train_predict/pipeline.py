@@ -794,19 +794,10 @@ class SegPipe():
         if model_names == None:
             model_names = [self.model_name]
 
-
         print('Get metrics')
         print('Evaluation mode: ', self.eval_mode)
         print(f'Evaluation on {surveys_names}')
         assert self.eval_mode in ['all', 'fish', 'region']
-
-        # Initialize plot
-        dpi = 400
-        mm_to_inch = 1 / 25.4
-        figsize_x = 170.0
-        figsize_y = 0.8 * figsize_x
-        # fig_pr = plt.figure(figsize=(mm_to_inch * figsize_x, mm_to_inch * figsize_y), dpi=dpi)
-        # fig_roc = plt.figure(figsize=(mm_to_inch * figsize_x, mm_to_inch * figsize_y), dpi=dpi)
 
         # Initialize dataframe
         appended_df = []
@@ -887,113 +878,37 @@ class SegPipe():
                                                                        preds[np.where(labels != -1)],
                                                                        pos_label=1)
 
-                # F1 = 2 * (precision * recall) / (precision + recall)
-                # F1[np.invert(np.isfinite(F1))] = 0
-                # print(f"Computed pr, F1 in (min): {np.round((time.time() - start) / 60, 2)}")
-                #
-                # # ROC, AUC
-                # start = time.time()
-                # fpr, tpr, _ = roc_curve(labels[np.where(labels != -1)],
-                #                         preds[np.where(labels != -1)],
-                #                         pos_label=1)
-                # AUC = auc(x=fpr, y=tpr)
-                # print(f"Computed roc, AUC in (min): {np.round((time.time() - start) / 60, 2)}")
-                #
-                # print(survey, 'F1: {:.3f}, AUC:{:.3f}, Precision: {:.3f}, Recall: {:.3f}, Threshold: {:.3f}'.format(
-                #     F1[np.argmax(F1)],
-                #     AUC,
-                #     precision[np.argmax(F1)],
-                #     recall[np.argmax(F1)],
-                #     thresholds[np.argmax(F1)]
-                # )
-                #       )
+                F1 = 2 * (precision * recall) / (precision + recall)
+                F1[np.invert(np.isfinite(F1))] = 0
+                print(f"Computed pr, F1 in (min): {np.round((time.time() - start) / 60, 2)}")
+
+                # ROC, AUC
+                start = time.time()
+                fpr, tpr, _ = roc_curve(labels[np.where(labels != -1)],
+                                        preds[np.where(labels != -1)],
+                                        pos_label=1)
+                AUC = auc(x=fpr, y=tpr)
+                print(f"Computed roc, AUC in (min): {np.round((time.time() - start) / 60, 2)}")
+
+                print(survey, 'F1: {:.3f}, AUC:{:.3f}, Precision: {:.3f}, Recall: {:.3f}, Threshold: {:.3f}'.format(
+                    F1[np.argmax(F1)],
+                    AUC,
+                    precision[np.argmax(F1)],
+                    recall[np.argmax(F1)],
+                    thresholds[np.argmax(F1)]
+                )
+                      )
 
                 # Write metrics to pandas df
                 model_name_out = model_names[0] if len(model_names) == 0 \
                     else f"{model_names[0].split('.')[0][:-1]}_{len(model_names)}ensemble"
 
-                df = pd.DataFrame({"Survey": [survey] * len(precision),
-                                        "precision": precision,
-                                        "recall": recall,
-                                        })
-                df.to_csv(self.dir_savefig + 'metrics_' + self.eval_mode + '_' + \
-                                              model_name_out + \
-                                              f'_{survey}.csv', index=False
-                                              )
-                # df = pd.DataFrame({'Survey': [survey],
-                #                    'Model': [model_name_out],
-                #                    'AUC': [AUC],
-                #                    'F1': [F1[np.argmax(F1)]],
-                #                    'Precision': [precision[np.argmax(F1)]],
-                #                    'Recall': [recall[np.argmax(F1)]],
-                #                    'Threshold': [thresholds[np.argmax(F1)]],
-                #                    }
-                #                   )
-                #
-                # appended_df.append(df)
-
-                # Plot
-                # ticks = [0, 0.2, 0.4, 0.6, 0.8, 1.0]
-                # ticks_empty = [''] * len(ticks)
-                # ax_pr = fig_pr.add_subplot(3, 4, 1 + j, xlim=(0, 1), ylim=(0, 1))
-                # ax_pr.set_title(survey, fontsize=8)  # , pad=5)
-                # ax_roc = fig_roc.add_subplot(3, 4, 1 + j, xlim=(0, 1), ylim=(0, 1))
-                # ax_roc.set_title(survey, fontsize=8)  # , pad=5)
-                # if j % 4 == 0:
-                #     ax_pr.set_ylabel("Precision", fontsize=8)  # , labelpad=-25)
-                #     ax_pr.set_yticks(ticks)
-                #     ax_roc.set_ylabel("True positive rate", fontsize=8)  # , labelpad=-25)
-                #     ax_roc.set_yticks(ticks)
-                # else:
-                #     ax_pr.set_yticklabels(ticks_empty)
-                #     ax_roc.set_yticklabels(ticks_empty)
-                # if 1 + j > 8:
-                #     ax_pr.set_xlabel("Recall", fontsize=8)  # , labelpad=-20)
-                #     ax_pr.set_xticks(ticks)
-                #     ax_roc.set_xlabel("False positive rate", fontsize=8)  # , labelpad=-20)
-                #     ax_roc.set_xticks(ticks)
-                # else:
-                #     ax_pr.set_xticklabels(ticks_empty)
-                #     ax_roc.set_xticklabels(ticks_empty)
-                # ax_pr.tick_params(labelsize=6)
-                # ax_pr.scatter(recall, precision, s=2, c=color_survey[survey])
-                # ax_pr.set_xlim(-0.06, 1.06)
-                # ax_pr.set_ylim(-0.06, 1.06)
-                # ax_roc.set_xlim(-0.06, 1.06)
-                # ax_roc.set_ylim(-0.06, 1.06)
-                # ax_roc.tick_params(labelsize=6)
-                # ax_roc.scatter(fpr, tpr, s=2, c=color_survey[survey])
-                #
-                # # Save and show figures
-                # fig_pr.tight_layout()
-                # fig_roc.tight_layout()
-                if self.dir_savefig is not None:
-                    if not os.path.isdir(self.dir_savefig):
-                        os.makedirs(self.dir_savefig)
-                #
-                #     name_savefig = self.dir_savefig + 'pr_' + self.eval_mode + '_' + \
-                #                    self.path_model_params.split('/')[-1].split('.pt')[0]
-                #     name_savefig_roc = self.dir_savefig + 'roc_' + self.eval_mode + '_' + \
-                #                        self.path_model_params.split('/')[-1].split('.pt')[0]
-                #     fig_pr.savefig(fname=name_savefig + '.png', dpi=dpi)
-                #     fig_roc.savefig(fname=name_savefig_roc + '.png', dpi=dpi)
-                #     with open(name_savefig + '.pkl', "wb") as file:
-                #         pickle.dump(fig_pr, file)
-                #     with open(name_savefig_roc + '.pkl', "wb") as file:
-                #         pickle.dump(fig_roc, file)
-                #
-                #     plt.show(block=False)
-
-                    # Save dataframe
-                    # pd.concat(appended_df).to_csv(self.dir_savefig + 'metrics_' + self.eval_mode + '_' + \
-                    #                               model_name_out + \
-                    #                               '.csv', index=False
-                    #                               )
-                # else:
-                #     print(
-                #         'Config option --dir_savefig should not be None if you want to see the results, i.e. provide a path to the directory for saving the evaluation results')
-                #     continue
-
+                df = pd.DataFrame({"survey": [survey] * len(precision),
+                                   "precision": precision,
+                                   "recall": recall})
+                save_path_metrics = os.path.join(self.dir_savefig,
+                                                 f'metrics_{self.eval_mode}_{model_name_out}_{survey}.csv')
+                df.to_csv(save_path_metrics, index=False)
 
 
 class SegPipeUNet(SegPipe):
