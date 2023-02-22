@@ -17,10 +17,22 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
 """
 
 
-from data.normalization import db
-
 def db_with_limits(data, labels, echogram, frequencies, limit_low=-75, limit_high=0):
     data = db(data)
-    data[data>limit_high] = limit_high
-    data[data<limit_low] = limit_low
+    data[data > limit_high] = limit_high
+    data[data < limit_low] = limit_low
     return data, labels, echogram, frequencies
+
+
+def db_with_limits_scaled(data, labels, echogram, frequencies, limit_low=-75, limit_high=0):
+    data = db(data)
+    data[data > 0] = 0
+    data[data > limit_high] = limit_high
+    data[data < limit_low] = limit_low
+    data = 1 + data / np.abs(limit_low)
+    return data, labels, echogram, frequencies
+
+
+def db(data, eps=1e-10):
+    """ Decibel (log) transform """
+    return 10 * np.log10(data + eps)

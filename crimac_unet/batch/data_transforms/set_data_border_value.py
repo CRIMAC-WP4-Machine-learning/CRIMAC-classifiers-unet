@@ -16,23 +16,10 @@ License along with this library; if not, write to the Free Software
 Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
 """
 
-import numpy as np
-import xarray as xr
 from constants import *
 
-def remove_nan_inf(data, labels, echogram, frequencies, new_value=0.0):
-    '''
-    Reassigns all non-finite data values (nan, positive inf, negative inf) to new_value.
-    :param data:
-    :param labels:
-    :param echogram:
-    :param new_value:
-    :return:
-    '''
-    labels[np.invert(np.isfinite(data[0, :, :]))] = LABEL_IGNORE_VAL
-    data[np.invert(np.isfinite(data))] = new_value
-    return data, labels, echogram, frequencies
 
-def remove_nan_inf_xr(data, labels, echogram, frequencies, new_value=0.0):
-    data = xr.where(data.isnull(), new_value, data)
+def set_data_border_value(data, labels, echogram, frequencies, border_value = 0.0):
+    """ Set data points outside data border to border_value """
+    data[:, labels == LABEL_BOUNDARY_VAL] = border_value
     return data, labels, echogram, frequencies

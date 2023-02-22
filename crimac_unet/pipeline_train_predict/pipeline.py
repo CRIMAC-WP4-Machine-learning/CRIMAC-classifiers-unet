@@ -17,142 +17,98 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
 """
 
 import time
-import numpy as np
-import pickle
 import pandas as pd
-from sklearn.metrics import auc, roc_curve, precision_recall_curve
-
-import torch
+from sklearn.metrics import precision_recall_curve
+from pathlib import Path
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.utils.data import DataLoader
-
-from data.echogram import get_data_readers
-from batch.dataset import Dataset
-from batch.samplers.background import Background, BackgroundZarr
-from batch.samplers.seabed import Seabed, SeabedZarr
-from batch.samplers.school import School, SchoolZarr
-from batch.samplers.school_seabed import SchoolSeabed, SchoolSeabedZarr
-from batch.data_augmentation.flip_x_axis import flip_x_axis
-from batch.data_augmentation.add_noise import add_noise
-from batch.data_transforms.remove_nan_inf import remove_nan_inf
-from batch.data_transforms.db_with_limits import db_with_limits
-from batch.label_transforms.convert_label_indexing import convert_label_indexing
-from batch.label_transforms.refine_label_boundary import refine_label_boundary
-from batch.combine_functions import CombineFunctions
-
-import models.unet as models
-
 import matplotlib.pyplot as plt
 from paths import *
 import dask
-import xarray as xr
-from numcodecs import Blosc
-import shutil
-dask.config.set(scheduler='synchronous')
+from tqdm import tqdm
+import torch.multiprocessing
+
+from utils.losses import FocalLoss, DiceLoss, CombinedCEFocalLoss, DiceCELoss
+import models.unet as models
+from constants import *
+
+torch.multiprocessing.set_sharing_strategy('file_system')
+dask.config.set(scheduler="synchronous")
 
 
-class SegPipe():
-    """ Object to represent segmentation training-prediction pipeline """
-    def __init__(self, opt):
-        self.opt = opt
+class SegPipe:
+    """Object to represent segmentation training-prediction pipeline"""
+
+    def __init__(self, checkpoint_dir,
+                 data_mode,
+                 frequencies,
+                 patch_size,
+                 loss_type,
+                 lr,
+                 lr_reduction,
+                 lr_step,
+                 momentum,
+                 batch_size,
+                 num_workers,
+                 iterations,
+                 test_iter,
+                 log_step,
+                 save_model_params,
+                 meta_channels,
+                 late_meta_inject,
+                 eval_mode,
+                 experiment_name,
+                 **kwargs):
+        assert not (save_model_params and (checkpoint_dir is None))
+
         self.model = None
         self.model_is_loaded = False
 
         # Data
-        self.data_mode = opt.data_mode  # Zarr or memmap
-        self.frequencies = opt.frequencies
-        if self.frequencies == 'all':
+        self.data_mode = data_mode  # Zarr or memmap
+        self.frequencies = frequencies
+        if self.frequencies == "all":
             self.frequencies = [18, 38, 120, 200]
-        if self.data_mode == 'zarr': # zarr data uses Hz rather than kHz
-            self.frequencies = sorted([freq*1000 for freq in self.frequencies])
-        self.window_dim = opt.window_dim
-        self.window_size = [self.window_dim, self.window_dim]
+        if self.data_mode == "zarr":  # zarr data uses Hz rather than kHz
+            self.frequencies = sorted([freq for freq in self.frequencies])
+        self.window_size = patch_size
 
         # Training
-        self.device = torch.device(opt.dev if torch.cuda.is_available() else "cpu")
-        self.lr = opt.lr
-        self.lr_reduction = opt.lr_reduction
-        self.momentum = opt.momentum
-        self.test_iter = opt.test_iter
-        self.log_step = opt.log_step
-        self.lr_step = opt.lr_step
-        self.save_model_params = opt.save_model_params
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.loss_type = loss_type
+        self.lr = lr
+        self.lr_reduction = lr_reduction
+        self.momentum = momentum
+        self.lr_step = lr_step
+        self.iterations = iterations
+        self.test_iter = test_iter
+        self.log_step = log_step
+        self.batch_size = batch_size
+        self.num_workers = num_workers
+        self.save_model_params = save_model_params
+        self.checkpoint_dir = checkpoint_dir
+
+        # Model architecture (use metadata)
+        self.meta_channels = meta_channels
+        self.late_meta_inject = late_meta_inject
+        if len(self.meta_channels) > 0:
+            self.use_metadata = True
+        else:
+            self.use_metadata = False
 
         # Inference/evaluation
-        self.path_model_params = path_to_trained_model()
-        self.model_name = self.path_model_params.split('/')[-1].split('.')[0]
-        self.eval_mode = opt.eval_mode
-        self.partition_predict = opt.partition_predict
-        self.dir_savefig = path_for_saving_figs()
-        self.dir_save_preds_labels = path_for_saving_preds_labels()
-        self.save_labels = opt.save_labels
-        self.labels_available = opt.labels_available
+        self.model_name = experiment_name
+        # TODO: This should be reviewed with the new chosen convention for the name of models!
+        # if self.model_name == "model_best_F1":
+        #    self.model_name = Path(self.path_model_params).parts[-4]
+        self.eval_mode = eval_mode
 
-    def define_data_augmentation(self):
-        """ Returns data augmentation functions to be applied when training """
-        data_augmentation = CombineFunctions([add_noise, flip_x_axis])
-        return data_augmentation
+        # TODO move from initialization to function call?
+        self.best_F1_val = -np.inf
 
-    def define_data_transform(self):
-        """ Returns data transform functions to be applied when training """
-        data_transform = CombineFunctions([remove_nan_inf, db_with_limits])
-        return data_transform
-
-    def define_label_transform(self):
-        """ Returns label transform functions to be applied when training """
-        label_transform = CombineFunctions([convert_label_indexing,
-                                            refine_label_boundary(frequencies=self.frequencies,
-                                                                  threshold_freq=self.frequencies[-1])])
-        return label_transform
-
-    def define_data_loaders(self, samplers_train, samplers_test, sampler_probs):
-        """
-        Defines data loaders for training and validation in the training process
-        :param samplers_train: List of the samplers used to draw samples for training
-        :param samplers_test: List of the samplers used to draw samples for validation
-        :param sampler_probs: List of the sampling probabilities awarded to each of the samplers
-        """
-        data_augmentation = self.define_data_augmentation()
-        label_transform = self.define_label_transform()
-        data_transform = self.define_data_transform()
-
-        dataset_train = Dataset(
-            samplers_train,
-            self.window_size,
-            self.frequencies,
-            self.opt.batch_size * self.opt.iterations,
-            sampler_probs,
-            augmentation_function=data_augmentation,
-            label_transform_function=label_transform,
-            data_transform_function=data_transform)
-
-        dataset_test = Dataset(
-            samplers_test,
-            self.window_size,
-            self.frequencies,
-            self.opt.batch_size * self.opt.test_iter,
-            sampler_probs,
-            augmentation_function=None,
-            label_transform_function=label_transform,
-            data_transform_function=data_transform)
-
-        dataloader_train = DataLoader(dataset_train,
-                                      batch_size=self.opt.batch_size,
-                                      shuffle=False,
-                                      num_workers=self.opt.num_workers,
-                                      worker_init_fn=np.random.seed)
-
-        dataloader_test = DataLoader(dataset_test,
-                                     batch_size=self.opt.batch_size,
-                                     shuffle=False,
-                                     num_workers=self.opt.num_workers,
-                                     worker_init_fn=np.random.seed)
-
-        return dataloader_train, dataloader_test
-
-    def load_model_params(self):
+    def load_model_params(self, checkpoint_path=None):
+        # Todo: If we do not need ensembles, remove this
         """
         Loads the model with pre-trained parameters (if the params are not already loaded)
         :return: None
@@ -162,1011 +118,317 @@ class SegPipe():
             pass
         else:
             assert self.model is not None
+            if checkpoint_path is None:
+                checkpoint_path = Path(self.checkpoint_dir, 'best.pt')
+
             with torch.no_grad():
                 self.model.to(self.device)
-                self.model.load_state_dict(torch.load(self.path_model_params, map_location=self.device))
+                self.model.load_state_dict(
+                    torch.load(checkpoint_path, map_location=self.device)
+                )
                 self.model.eval()
+            print('loaded model', checkpoint_path)
             self.model_is_loaded = True
 
-    def train_model(self, data_obj, logger=None):
+    def get_criterion(self):
+        criterion = None
+        # TODO: move out
+        weight = torch.tensor([10., 300, 250]).to(self.device)
+
+        if self.loss_type == "CE":
+            criterion = nn.CrossEntropyLoss(weight=weight)
+        elif self.loss_type == "Focal":
+            criterion = FocalLoss(weight=weight, gamma=3)
+        elif self.loss_type == "Dice":
+            criterion = DiceLoss(weight=None)
+        elif self.loss_type == "Combined":
+            criterion = CombinedCEFocalLoss(weight=weight, gamma=3, t1=0.4, t2=1.6)
+        elif self.loss_type == "DiceCE":
+            criterion = DiceCELoss(weight=weight, lambda_dice=1, lambda_ce=1)
+        else:
+            raise ValueError("`loss_type` not recognized")
+        return criterion
+
+
+    def train_model(self, dataloader_train, dataloader_test, logger=None):
         """
         Model training and saving of the model at the last iteration
-        :param data_obj: DataZarr or DataMemm which handles data reading and partition
         """
 
-        # TODO add tensorboard logger
-        assert not os.path.exists(self.path_model_params), \
-            'Attempting to train a model that already exists: ' + self.model_name + '\n' \
-                                                                                    'Use a different model name or delete the model params file: ' + self.path_model_params
-
-        # Prepare data loaders
-        print("Preparing data samplers")
-        start = time.time()
-        echograms_train, echograms_test = data_obj.partition_data()
-        samplers_train, samplers_test, sampler_probs = data_obj.sample_data(echograms_train, echograms_test)
-        print(f"Executed time for preparing samples (s): {np.round((time.time() - start), 2)}")
-
-        print("Preparing data loaders")
-        start = time.time()
-        dataloader_train, dataloader_test = self.define_data_loaders(samplers_train, samplers_test, sampler_probs)
-        print(f"Executed time for preparing data loaders (s): {np.round((time.time() - start), 2)}")
+        assert not self.checkpoint_dir.is_dir(), f"""
+            Attempting to train a model that already exists: {str(self.checkpoint_dir)}
+            Use a different model name or delete the saved model params file
+        """
 
         self.model.to(self.device)
 
-        criterion = nn.CrossEntropyLoss(weight=torch.Tensor([10, 300, 250]).to(self.device))
         optimizer = optim.SGD(self.model.parameters(), lr=self.lr, momentum=self.momentum)
         scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=self.lr_reduction)
-
-        running_loss_train = 0.0
+        criterion = self.get_criterion()
 
         # Train model
-        for i, (inputs_train, labels_train) in enumerate(dataloader_train):
-            print("[Step %d/%d]" % (i+1, len(dataloader_train)))
-
+        for i, batch in tqdm(enumerate(dataloader_train), desc='Training model', total=len(dataloader_train)):
             # Load train data and transfer from numpy to pytorch
-            inputs_train = inputs_train.float().to(self.device)
-            labels_train = labels_train.long().to(self.device)
+            inputs_train = batch['data'].float().to(self.device)
+            labels_train = batch['labels'].long().to(self.device)
 
             # Forward + backward + optimize
             self.model.train()
             optimizer.zero_grad()
-            outputs_train = self.model(inputs_train)
+
+            if not self.late_meta_inject:
+                outputs_train = self.model(inputs_train)
+            else:
+                outputs_train = self.model(inputs_train[:, : len(self.frequencies), :, :],
+                                           inputs_train[:, len(self.frequencies):, :, :])
+
             loss_train = criterion(outputs_train, labels_train)
             loss_train.backward()
             optimizer.step()
 
             # Update loss count for train set
-            running_loss_train += loss_train.item()
-            logger.log_scalar(tag='loss_train', value=loss_train.item(), step=i + 1)
+            logger.add_scalar(tag='train/loss', scalar_value=loss_train.item(), global_step=i + 1)
 
-            # Validate and log
+            # Validate and log validation metrics and test loss
             if (i + 1) % self.log_step == 0:
-                if len(echograms_test) > 0:
-                    self.validate_model(logger, i, dataloader_test, echograms_test, criterion)
+                self.validate_model_training(dataloader_test, criterion, logger, i)
 
             # Update learning rate every 'lr_step' number of batches
             if (i + 1) % self.lr_step == 0:
-                print(i + 1)
                 scheduler.step()
-                print('lr:', [group['lr'] for group in optimizer.param_groups])
 
-        print('Training complete')
+                # Log updated learning rate(s)
+                for group_idx, group in enumerate(optimizer.param_groups):
+                    logger.add_scalar(tag=f'learning_rate_{group_idx}', scalar_value=group["lr"], global_step=i + 1)
+
+        print("Training complete")
         self.model_is_loaded = True
 
-        # Save model parameters to file after training
-        if self.save_model_params and self.path_model_params != None:
-            torch.save(self.model.state_dict(), self.path_model_params)
-            print('Trained model parameters saved to file: ' + self.path_model_params)
+        # Save final model
+        if self.save_model_params:
+            self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            checkpoint_path = self.checkpoint_dir / 'last.pt'
+            torch.save(self.model.state_dict(), checkpoint_path)
+            print('Trained model parameters saved to file:', str(checkpoint_path))
 
-    def validate_model(self, logger, i, dataloader_test, readers_test, criterion):
-        print('##################')
-        print('Start validation')
-        print('##################')
+    def predict_batch(self, batch, return_softmax=False):
+        self.model.eval()
+        with torch.no_grad():
+            inputs = batch['data'].float().to(self.device)
 
-        if self.data_mode == 'zarr':
-            echograms_test = []
-            for reader in readers_test:
-                echograms_test.extend([[reader, raw_file.replace('.raw', '')] for raw_file in reader.raw_file_included])
-        else:
-            echograms_test = readers_test
+            if not self.late_meta_inject:
+                outputs = self.model(inputs)
+            else:
+                outputs = self.model(
+                    inputs[:, : len(self.frequencies), :, :],
+                    inputs[:, len(self.frequencies):, :, :],
+                )
+        if return_softmax:
+            return F.softmax(outputs, dim=1)
+        return outputs
 
+    # TODO move function outside pipeline class?
+    def set_label_ignore_val(self, labels):
+        # Ignore areas where the grid overlaps
+        labels[labels == LABEL_OVERLAP_VAL] = LABEL_IGNORE_VAL
 
+        # Ignore areas where labels have been refined
+        labels[labels == LABEL_REFINE_BOUNDARY_VAL] = LABEL_IGNORE_VAL
+
+        # Ignore areas outside data boundary
+        labels[labels == LABEL_BOUNDARY_VAL] = LABEL_IGNORE_VAL
+
+        # Ignore species other than "sandeel" and "other". Additional categories include "juvenile sandeel",
+        # which the model is not trained on.
+        labels[labels == LABEL_UNUSED_SPECIES] = LABEL_IGNORE_VAL
+
+        # When calculating loss and computing evaluation metrics, we include areas below seabed, which have no fish
+        labels[labels == LABEL_SEABED_MASK_VAL] = 0
+
+        return labels
+
+    # TODO rename?
+    def get_predictions_dataloader(self, dataloader, criterion=None, disable_tqdm=False):
+        """
+        Get predictions for all patches in dataloader, return predictions as vector
+        """
         preds = []
         labels = []
 
-        running_loss_test = 0.0
+        sum_loss = 0.0
+        self.model.eval()
         with torch.no_grad():
-            self.model.eval()
+            for ii, batch_test in tqdm(enumerate(dataloader), desc='Evaluating model', total=len(dataloader),
+                                       disable=disable_tqdm):
+                # Get predictions
+                outputs_test = self.predict_batch(batch_test, return_softmax=False)
 
-            for ii, ech_input in tqdm(enumerate(echograms_test), total=len(echograms_test), desc='Validating ...'):
-                #print("[Prediction step %d/%d]" % (ii + 1, len(echograms_test)))
+                if criterion is not None:
+                    # Update loss count for test set
+                    labels_input = batch_test['labels'].long().to(self.device)
 
-                if self.data_mode == 'zarr':
-                    reader, ech = ech_input
-                    seg, label = self.predict_echogram(reader, ech, sandeel_only=True, model_train=True)
-                else:
-                    seg, label = self.predict_echogram(ech_input, sandeel_only=True, model_train=True)
-                preds += [seg.ravel()]
+                    # Set all ignore areas to LABEL_IGNORE_VAL or background (beneath seabed) to calculate loss
+                    labels_input = self.set_label_ignore_val(labels_input)
 
-                if self.eval_mode == 'region':
-                    # TODO This currently works only if memm data is selected, extend to zarr
-                    eval_mask = self.get_extended_label_mask_for_echogram(ech, extend_size=20)
-                    # Set labels to -1 if not included in evaluation mask
-                    label[eval_mask != True] = -1
+                    loss_test = criterion(outputs_test, labels_input)
+                    sum_loss += loss_test.item()
 
-                if self.eval_mode == 'trace':
-                    # TODO This currently works only if memm data is selected, extend to zarr
-                    eval_mask = self.get_extended_label_mask_for_echogram(ech, extend_size=20, trace_mode='trace')
-                    # Set labels to -1 if not included in evaluation mask
-                    label[eval_mask != True] = -1
+                # Do softmax, convert predictions to numpy, select sandeel channel only
+                # TODO gather in post-processing step?
+                preds_softmax = F.softmax(outputs_test, dim=1)
+                preds_numpy = preds_softmax[:, SANDEEL].cpu().numpy()
+                labels_numpy = batch_test['labels'].numpy()
 
-                # 'Fish' evaluation mode: Set all background pixels to 'ignore', i.e. only evaluate the discrimination on species
-                if self.eval_mode == 'fish':
-                    label[label == 0] = -1
+                # set probability of sandeel to 0 underneath seabed
+                preds += [preds_numpy.ravel()]
+                labels += [labels_numpy.ravel()]
 
-                labels += [label.ravel()]
+        # Gather all predictions and labels in vector
+        preds = np.hstack(preds).astype(np.float16)
+        labels = np.hstack(labels).astype(np.int8)
 
-            preds = np.hstack(preds)
-            labels = np.hstack(labels)
+        mean_loss = sum_loss / len(dataloader)
+        return labels, preds, mean_loss
 
-            # Precision, recall, F1
-            print("Started computing metrics")
-            start = time.time()
-            precision, recall, thresholds = precision_recall_curve(labels[np.where(labels != -1)],
-                                                                   preds[np.where(labels != -1)],
-                                                                   pos_label=1)
+    def compute_evaluation_metrics(self, labels, preds):
+        precision, recall, thresholds = precision_recall_curve(y_true=labels,
+                                                               probas_pred=preds,
+                                                               pos_label=SANDEEL)
 
-            F1 = 2 * (precision * recall) / (precision + recall)
-            F1[np.invert(np.isfinite(F1))] = 0
+        # avoid RuntimeWarning: invalid value encountered in true_divide
+        # https://stackoverflow.com/a/66549018
+        numerator = 2 * recall * precision
+        denom = recall + precision
+        f1_scores = np.divide(numerator, denom, out=np.zeros_like(denom), where=(denom != 0))
 
-            # Log metrics
-            logger.log_scalar(tag='F1_score_test', value=F1[np.argmax(F1)], step=i + 1)
-            logger.log_scalar(tag='precision_test', value=precision[np.argmax(F1)], step=i + 1)
-            logger.log_scalar(tag='recall_test', value=recall[np.argmax(F1)], step=i + 1)
-            print(f"Finished computing metrics in (min): {np.round((time.time() - start) / 60, 2)}")
+        return {'precision': precision, 'recall': recall, 'thresholds': thresholds, 'F1': f1_scores}
 
-            # Log pr curve
+    def select_valid_predictions(self, labels, preds):
+        """ Select predictions to run validation on """
+        # Set all ignore label areas to same ignore value, except areas below seabed
+        labels = self.set_label_ignore_val(labels)
+        idx_labels_valid = np.where(labels != LABEL_IGNORE_VAL)
+
+        return labels[idx_labels_valid], preds[idx_labels_valid]
+
+    def validate_model_training(self, dataloader_test, criterion, logger, iteration_no):
+        """
+        Code to run validation during training
+        :param dataloader_test: Dataloader for testing
+        :param criterion: Loss criterion used during training to compare train/test losses
+        :param logger: Log validation results
+        :param iteration_no: Nr of training iterations completed so far
+        """
+
+        labels, preds, loss_test = self.get_predictions_dataloader(dataloader_test, criterion=criterion)
+
+        # Set probability of sandeel below seabed to 0
+        preds[labels == LABEL_SEABED_MASK_VAL] = 0
+
+        # Select all valid predictions (areas where labels are not marked ignore)
+        labels, preds = self.select_valid_predictions(labels=labels, preds=preds)
+
+        # Compute evaluation metrics
+        metrics = self.compute_evaluation_metrics(labels=labels, preds=preds)
+        F1 = metrics["F1"]
+        argmax_F1 = np.argmax(F1)
+
+        # Log metrics
+        iter_step = iteration_no + 1
+        logger.add_scalar(tag='test/F1_score', scalar_value=F1[argmax_F1], global_step=iter_step)
+        logger.add_scalar(tag='test/precision', scalar_value=metrics["precision"][argmax_F1], global_step=iter_step)
+        logger.add_scalar(tag='test/recall', scalar_value=metrics["recall"][argmax_F1], global_step=iter_step)
+        logger.add_scalar(tag='test/loss', scalar_value=loss_test, global_step=iter_step)
+        logger.add_pr_curve(tag='test/pr_curve', labels=labels, predictions=preds, global_step=iter_step)
+
+        # Save best model in terms of best validation F1 score
+        if F1[argmax_F1] > self.best_F1_val:
+            self.best_F1_val = F1[argmax_F1]
+
+            self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            checkpoint_path = self.checkpoint_dir / 'best.pt'
+            torch.save(self.model.state_dict(), checkpoint_path)
+
+    def validate_model_testing(self, dataloader, save_path_metrics, save_path_plot):
+        if not self.model_is_loaded:
+            self.load_model_params()
+
+        labels, preds, _ = self.get_predictions_dataloader(dataloader, disable_tqdm=False)
+
+        # Set probability of sandeel below seabed to 0
+        preds[labels == LABEL_SEABED_MASK_VAL] = 0
+
+        # Select all valid predictions (areas where labels are not marked ignore)
+        labels, preds = self.select_valid_predictions(labels=labels, preds=preds)
+
+        # Compute evaluation metrics
+        metrics = self.compute_evaluation_metrics(labels=labels, preds=preds)
+
+        # Save metrics
+        if save_path_metrics is not None:
+            thresholds = np.array(list(metrics['thresholds']) + [np.nan])
+            metrics['thresholds'] = thresholds
+            df = pd.DataFrame(metrics)
+            df.to_csv(save_path_metrics)
+        if save_path_plot is not None:
             fig, ax = plt.subplots(1, figsize=(8, 8))
             ticks = [0, 0.2, 0.4, 0.6, 0.8, 1.0]
             ax.tick_params(labelsize=6)
             ax.set_xlabel("Recall", fontsize=8)
             ax.set_ylabel("Precision", fontsize=8)
             ax.set_xticks(ticks)
-            ax.scatter(recall, precision, s=2)
+            ax.scatter(metrics['recall'], metrics['precision'], s=2)
             ax.set_xlim(-0.06, 1.06)
             ax.set_ylim(-0.06, 1.06)
-            plt.close(fig)
-            name_plot = 'val_pr_curve'
-            logger.log_plot(name_plot, fig, i + 1)
-
-            # Save best model in terms of best validation F1 score
-            logger.log_save_model(model=self.model, filename="model_best_F1",
-                                  step=i + 1, save_on_max=F1[np.argmax(F1)])
-
-            # Log running test loss
-            # Log running_loss for train and test
-            print("Started computing test loss")
-            start = time.time()
-            for inputs_test, labels_test in dataloader_test:
-                # Load test data and transfer from numpy to pytorch
-                inputs_test = inputs_test.float().to(self.device)
-                labels_test = labels_test.long().to(self.device)
-                outputs_test = self.model(inputs_test)
-
-                loss_test = criterion(outputs_test, labels_test)
-
-                # Update loss count for test set
-                running_loss_test += loss_test.item()
-
-            logger.log_scalar(tag='running_loss_test', value=running_loss_test / self.test_iter, step= i + 1)
-            print(f"Finished computing test loss in (s): {np.round((time.time() - start), 2)}")
-
-        print('#####################')
-        print('Validation completed')
-        print('#####################')
-
-
-    def predict_echogram(self, ech, raw_file=None, sandeel_only=True, model_train=False):
-        """
-        Predict single echogram based on the sandeel survey
-        :param ech: echogram object
-        :raw_file: raw_file name in the case we are using zarr data
-        :sandeel_only: if set to True only focus on the sandeel predictions.
-        :return segmentation predictions and modified labels
-
-        Currently the sandeel_only option should be set to True as there are some potential issues with the post porecssing
-
-        """
-
-        def _segmentation(data, patch_size, patch_overlap):
-            """
-            Due to memory restrictions on device, echogram is divided into patches.
-            Each patch is segmented, and then stacked to create segmentation of the full echogram
-            """
-
-            def _get_patch_prediction(patch):
-                '''
-                Converts numpy data patch to torch tensor, predicts with model, and converts back to numpy.
-                :param patch: (np.array) Input data patch
-                :return: (np.array) Prediction
-                '''
-                patch = np.expand_dims(np.moveaxis(patch, -1, 0), 0)
-                self.model.eval()
-                with torch.no_grad():
-                    patch = torch.Tensor(patch).float()
-                    patch = patch.to(self.device)
-                    patch = F.softmax(self.model(patch), dim=1).cpu().numpy()
-                patch = np.moveaxis(patch.squeeze(0), 0, -1)
-                return patch
-
-            if type(patch_size) == int:
-                patch_size = [patch_size, patch_size]
-
-            if type(patch_overlap) == int:
-                patch_overlap = [patch_overlap, patch_overlap]
-
-            if len(data.shape) == 2:
-                data = np.expand_dims(data, -1)
-
-            # Add padding to avoid trouble when removing the overlap later
-            data = np.pad(data, [[patch_overlap[0], patch_overlap[0]], [patch_overlap[1], patch_overlap[1]], [0, 0]],
-                          'constant')
-
-            # Loop through patches identified by upper-left pixel
-            upper_left_x0 = np.arange(0, data.shape[0] - patch_overlap[0], patch_size[0] - patch_overlap[0] * 2)
-            upper_left_x1 = np.arange(0, data.shape[1] - patch_overlap[1], patch_size[1] - patch_overlap[1] * 2)
-
-            predictions = []
-            for x0 in upper_left_x0:
-                for x1 in upper_left_x1:
-                    # Cut out a small patch of the data
-                    data_patch = data[x0:x0 + patch_size[0], x1:x1 + patch_size[1], :]
-
-                    # Pad with zeros if we are at the edges
-                    pad_val_0 = patch_size[0] - data_patch.shape[0]
-                    pad_val_1 = patch_size[1] - data_patch.shape[1]
-
-                    if pad_val_0 > 0:
-                        data_patch = np.pad(data_patch, [[0, pad_val_0], [0, 0], [0, 0]], 'constant')
-
-                    if pad_val_1 > 0:
-                        data_patch = np.pad(data_patch, [[0, 0], [0, pad_val_1], [0, 0]], 'constant')
-
-                    # Run it through model
-                    pred_patch = _get_patch_prediction(data_patch)
-
-                    # Make output array (We do this here since it will then be agnostic to the number of output channels)
-                    if len(predictions) == 0:
-                        predictions = np.concatenate(
-                            [data[:-(patch_overlap[0] * 2), :-(patch_overlap[1] * 2), 0:1] * 0] * pred_patch.shape[2],
-                            -1)
-
-                    # Remove potential padding related to edges
-                    pred_patch = pred_patch[0:patch_size[0] - pad_val_0, 0:patch_size[1] - pad_val_1, :]
-
-                    # Remove potential padding related to overlap between data_patches
-                    pred_patch = pred_patch[patch_overlap[0]:-patch_overlap[0], patch_overlap[1]:-patch_overlap[1], :]
-
-                    # Insert output_patch in out array
-                    predictions[x0:x0 + pred_patch.shape[0], x1:x1 + pred_patch.shape[1], :] = pred_patch
-
-            return predictions
-
-        def _post_processing(seg, ech, idxs=None):
-            """ Set all predictions below seabed to zero. """
-            if idxs is None:
-                seabed = ech.get_seabed().copy()
-            else:
-                seabed = ech.get_seabed(idxs[0], n_pings=len(idxs)).copy()
-
-            seabed += 10
-            assert seabed.shape[0] == seg.shape[1]
-            for x, y in enumerate(seabed):
-            
-                if sandeel_only == True:
-                    seg[y:, x] = 0
-                else:
-                    seg[y:, x, 0] = 1 # Set the probability of having background to 1 below sea floor
-                    seg[y:, x, 1] = 0
-                    seg[y:, x, 2] = 0
-            return seg
-
-        patch_size = self.window_dim
-        patch_overlap = 20
-
-        idxs = None
-        if self.data_mode == 'zarr':
-            idxs = np.argwhere(ech.raw_file.values == raw_file).ravel()
-            data = ech.get_data_slice(idxs[0], n_pings=len(idxs), frequencies=self.frequencies, drop_na=False)
-
-            # Swap axis to match memm echogram
-            data = np.array(data).swapaxes(1, 2)
-
-            if self.labels_available:
-                # Get modified labels
-                labels = ech.get_label_slice(idxs[0], n_pings=len(idxs), drop_na=False)
-                labels = np.array(labels).T  # Transpose to match memm labels
-
-                # Set infinite values of data to 0 and associated indices of labels to ignore value -1
-                labels[np.invert(np.isfinite(data[0, :, :]))] = -1
-                data[np.invert(np.isfinite(data))] = 0
-
-                # Todo: Label processing should be performed with existing class method instead (verify that it does the same thing).
-                labels = convert_label_indexing(data, labels, ech)[1]
-                labels = refine_label_boundary(frequencies=self.frequencies,
-                                               threshold_freq=self.frequencies[-1])(data, labels, ech)[1]
-                labels[labels == -100] = -1
-            else:
-                # Set infinite values of data to 0
-                data[np.invert(np.isfinite(data))] = 0
-
-            data = db_with_limits(data, None, None, None)[0]
-        else:
-            data = ech.data_numpy(frequencies=self.frequencies)
-            data[np.invert(np.isfinite(data))] = 0
-
-            if self.labels_available:
-                # Get modified labels
-                labels = ech.label_numpy()
-                # Todo: Label processing should be performed with existing class method instead (verify that it does the same thing).
-                labels = convert_label_indexing(data, labels, ech)[1]
-                labels = refine_label_boundary(frequencies=self.frequencies,
-                                               threshold_freq=self.frequencies[-1])(np.moveaxis(data, -1, 0), labels,
-                                                                                    ech)[1]
-                labels[labels == -100] = -1
-            data = db_with_limits(np.moveaxis(data, -1, 0), None, None, None)[0]
-
-        data = np.moveaxis(data, 0, -1)
-
-        if not model_train:
-            self.load_model_params()
-
-        # Get segmentation
-        if sandeel_only:
-            seg = _segmentation(data, patch_size, patch_overlap)[:, :, 1]
-        else:
-            seg = _segmentation(data, patch_size, patch_overlap)
-
-        # Remove sandeel predictions 10 pixels below seabed and down
-        # Todo: Think about current implementation of self._post_processing
-        #   Olav's additional comment on this respect: " The _post_processing applied on a 3d array - not sure what happens then.
-        #   I believe that everything is set to zero below the seabed. That means that the probability of
-        #   sandeel+other+background no longer sums to 1, but to 0 (below the seabed).
-        #   Ideally, this should be [0, 0, 1] instead of [0, 0, 0]."
-        seg = _post_processing(seg, ech, idxs)
-
-        if self.labels_available:
-            return seg, labels
-        else:
-            return seg
-
-    # TODO update for zarr
-    def get_extended_label_mask_for_echogram(self, ech, extend_size, raw_file=None):
-        """
-        Computes an evaluation mask useful when the evaluation mode is set to 'region' or 'fish'
-        :param ech: echogram object
-        :param extend_size: extension added around the bounding box object
-        :param raw_file: raw_file name in the case we are using zarr data
-        :return evaluation mask
-        """
-        fish_types = [1, 27]
-        extension = np.array([-extend_size, extend_size, -extend_size, extend_size])
-
-        if self.data_mode == 'zarr':
-            ech_shape = ech.get_data_rawfile(raw_file=raw_file, frequencies=[self.frequencies[0]], drop_na=False).squeeze().shape[
-                        ::-1]  # Reversed shape to match echogram
-            eval_mask = np.zeros(shape=ech_shape,
-                                 dtype=np.bool)
-            raw_obj = ech.objects.where(ech.objects.raw_file == raw_file, drop=True).dropna(dim='object_length')
-            ech_objects = raw_obj.object_length.values
-        else:
-            ech_shape = ech.shape
-            eval_mask = np.zeros(shape=ech_shape, dtype=np.bool)
-            ech_objects = ech.objects
-
-        for obj in ech_objects:
-
-            if self.data_mode == 'zarr':
-                obj_type = np.array(raw_obj["fish_type_index"][obj])
-            else:
-                obj_type = obj["fish_type_index"]
-
-            if obj_type.size == 0 or obj_type not in fish_types:
-                continue
-
-            if self.data_mode == 'zarr':
-                bbox = np.array(raw_obj["bounding_box"])[:, obj, :].squeeze().astype(int)
-            else:
-                bbox = np.array(obj["bounding_box"])
-
-            # Extend bounding box
-            bbox += extension
-
-            # Crop extended bounding box if outside of echogram boundaries
-            bbox[bbox < 0] = 0
-            bbox[1] = np.minimum(bbox[1], ech_shape[0])
-            bbox[3] = np.minimum(bbox[3], ech_shape[1])
-
-            # Add extended bounding box to evaluation mask
-            eval_mask[bbox[0]:bbox[1], bbox[2]:bbox[3]] = True
-
-        return eval_mask
-
-    def save_segmentation_predictions_memm(self, data_obj, extend_size=20):
-        """
-        Save segmentation predictions related to sandeel
-        :param extend_size: extension added around the bounding box object useful when the evaluation mode is set to 'region' or 'fish'
-        :param selected_surveys: [Optional] List of names of the selected surveys.
-        :return None
-
-        This function loops over surveys and different surveys may be considered depending on the chosen partition for the prediction.
-        """
-        # Get survey readers and load model
-        surveys_list = data_obj.get_prediction_surveys()
-        surveys_names = data_obj.surveys_predict
-        self.load_model_params()
-
-        print('Evaluation mode: ', self.eval_mode)
-        assert self.eval_mode in ['all', 'fish', 'region']
-
-        assert self.dir_save_preds_labels is not None,\
-            'Provide a path to the directory for saving predictions and labels in setpyenv.json'
-
-        with torch.no_grad():
-            for j, survey_name in enumerate(surveys_names):
-                print(f'Saving predictions for: {survey_name}')
-
-                if self.data_mode == 'zarr':
-                    survey = [reader for reader in surveys_list if reader.name == survey_name][0]
-                    selected_echograms = [ech_name.replace('.raw', '') for ech_name in list(survey.raw_file_included)]
-                else:
-                    selected_echograms = [e for e in surveys_list if e.year == survey_name]
-
-                for ii, ech in enumerate(selected_echograms):
-                    print("[Step %d/%d]" % (ii+1, len(selected_echograms)))
-                    print(ech, survey.name)
-
-                    if self.data_mode == 'zarr':
-                        if self.labels_available:
-                            preds, labels = self.predict_echogram(survey, ech, sandeel_only=True)
-                        else:
-                            preds = self.predict_echogram(survey, ech, sandeel_only=True)
-                        ech_name = ech
-
-                    else:
-                        if self.labels_available:
-                            preds, labels = self.predict_echogram(ech, sandeel_only=True)
-                        else:
-                            preds = self.predict_echogram(ech, sandeel_only=True)
-                        ech_name = ech.name
-
-                    file_path_pred = self.dir_save_preds_labels + 'predictions/' + '{0}/{1}/'.format(ech_name,
-                                                                                                     self.model_name)
-
-                    if not os.path.exists(file_path_pred):
-                        os.makedirs(file_path_pred)
-
-                    if self.save_labels:
-                        assert self.labels_available == True
-                        file_path_label = self.dir_save_preds_labels + 'relabel_morph_close/' + '{0}/'.format(
-                            ech_name)
-                        if not os.path.exists(file_path_label):
-                            os.makedirs(file_path_label)
-                        # Todo: Verify that the labels we save here are used later with the correct label transforms.
-                        # Todo: Inlcude new feature "trace" as valid "self.eval_mode".
-                        #  "trace" is a hybrid of "all" and "region" mode:
-                        #   All regions in "region" mode are extended vertically,
-                        #   i.e. we include all the pixels in a ping if the ping would contain at least one pixel in "region" mode.
-                        #   Thus we either include all or none of the pixels in each ping.
-                        # Todo: Careful with saving labels in np.uint8, may be too limiting later on
-
-                        # 'Region' evaluation mode: Exclude all pixels not in a neighborhood of a labeled School ('sandeel' or 'other')
-                        if self.eval_mode == 'region':
-                            # Get evaluation mask, i.e. the pixels to be evaluated
-                            if self.data_mode == 'zarr':
-                                eval_mask = self.get_extended_label_mask_for_echogram(survey, extend_size,
-                                                                                      raw_file=ech_name)
-                            else:
-                                eval_mask = self.get_extended_label_mask_for_echogram(ech, extend_size)
-                            # Set labels to -1 if not included in evaluation mask
-                            labels[eval_mask != True] = -1
-                            np.save(file_path_label + 'label_region', labels.astype(np.int8))
-
-                        # 'Fish' evaluation mode: Set all background pixels to 'ignore', i.e. only evaluate the discrimination on species
-                        if self.eval_mode == 'fish':
-                            labels[labels == 0] = -1
-                            np.save(file_path_label + 'label_fish', labels.astype(np.int8))
-
-                        if self.eval_mode == 'all':
-                            np.save(file_path_label + 'label', labels.astype(np.int8))
-
-                    # Numpy save
-                    np.save(file_path_pred + 'pred', preds.astype(np.float16))
-
-    def save_segmentation_predictions_zarr(self, data_obj, resume=False):
-        """
-        Save segmentation predictions in zarr format
-        :param extend_size: extension added around the bounding box object useful when the evaluation mode is set to 'region' or 'fish'
-        :param selected_surveys: [Optional] List of names of the selected surveys.
-        :return None
-
-        This function loops over surveys and different surveys may be considered depending on the chosen partition for the prediction.
-        """
-
-        def _create_ds_predictions(survey, preds, ech_name):
-            t0 = np.where(survey.time_vector.raw_file.values == ech_name)[0][0]
-            t1 = np.where(survey.time_vector.raw_file.values == ech_name)[0][-1]
-
-            # Change axis order -> category from last to first axis
-            preds = np.moveaxis(preds, -1, 0).astype(np.float16)
-
-            # Create xarray dataset
-            ds = xr.Dataset({'annotation': xr.DataArray(data=preds[1:, :, :], # Save sandeel and other predictions
-                                                        dims=['category', 'range', 'ping_time'],
-                                                        coords={'category': [27, 1], # sandeel, other
-                                                                'range': survey.range_vector,
-                                                                'ping_time': survey.time_vector[t0:t1 + 1],
-                                                                })
-
-                             },
-                            attrs={'description': f'{self.model_name} predictions'}
-                            )
-            ds.coords["raw_file"] = ("ping_time", [ech_name] * len(ds.ping_time))
-
-            return ds
-
-        assert self.data_mode == 'zarr',\
-        "--data_mode should be 'zarr' to save predictions in zarr"
-
-        # Get survey readers and load model
-        surveys_list = data_obj.get_prediction_surveys()
-        self.load_model_params()
-
-        assert self.dir_save_preds_labels is not None,\
-        'Provide a path to the directory for saving predictions and labels in setpyenv.json'
-
-        with torch.no_grad():
-            for j, survey in enumerate(surveys_list):
-                print(f'Survey {survey.name}')
-                selected_echs = survey.raw_file_included
-
-                # If only one survey is selected, a target file name can be given
-                if self.dir_save_preds_labels[-4:] == 'zarr' and len(surveys_list) == 1:
-                    target_dname = self.dir_save_preds_labels
-
-                # Otherwise, a target directory name is given, all predictions are saved there using original survey name as base
-                else:
-                    target_dname = os.path.join(self.dir_save_preds_labels, surveys_list[j].name + '_pred' + '.zarr')
-                print('Saving predictions to', target_dname)
-
-                if resume != True:
-                    # Delete existing zarr dir of predictions
-                    if os.path.isdir(target_dname):
-                        shutil.rmtree(target_dname)
-                    write_first_loop = True
-                    print(f'Overwrite predictions (if they exist)')
-                else:
-                    assert os.path.isdir(target_dname)==True,\
-                    "No predictions were performed for this survey, please set the option --resume to False"
-                    write_first_loop = False
-                    print(f'Trying to resume predictions')
-                    predicted_raw_files = np.unique(xr.open_zarr(target_dname).raw_file)
-                    selected_echs = list(list(set(predicted_raw_files) - set(selected_echs)) + list(set(predicted_raw_files) - set(selected_echs)))
-                    if len(selected_echs) == 0:
-                        print("Cannot resume predictions as no new raw files were detected")
-                        continue
-
-                for ii, ech in enumerate(selected_echs):
-                    print("[Step %d/%d]" % (ii+1, len(selected_echs)))
-
-                    if self.labels_available:
-                        preds, labels = self.predict_echogram(survey, ech, sandeel_only=False)
-                    else:
-                        preds = self.predict_echogram(survey, ech, sandeel_only=False)
-                    ech_name = ech
-
-                    ds = _create_ds_predictions(survey, preds, ech_name)
-
-                    if ds is not None:
-                        # Re-chunk so that we have a full range in a chunk (zarr only)
-                        ds = ds.chunk({"range": ds.range.shape[0], "ping_time": 'auto'})
-
-                        compressor = Blosc(cname='zstd', clevel=3, shuffle=Blosc.BITSHUFFLE)
-                        encoding = {var: {"compressor": compressor} for var in ds.data_vars}
-                        if write_first_loop == False:
-                            ds.to_zarr(target_dname, append_dim="ping_time")
-                        else:
-                            ds.to_zarr(target_dname, mode="w", encoding=encoding)
-
-                        write_first_loop = False
-
-
-    # TODO ajust to zarr files
-    def compute_and_plot_evaluation_metrics(self, data_obj, selected_surveys=[], colors_list=[], model_names=None):
-        """
-        Compute and plot evaluation metrics for assessing the quality of the predictions obtained with a trained model.
-        This function assumes that the predictions and labels are saved before hand to disk (i.e. --dir_save_preds_labels option)
-        The metrics which are computed are: F1 score, precision, recall, thresholds, roc curve and auc.
-        The precision-recall and the roc curves are plotted and saved to disk when the option --dir_savefig is not None.
-        :param selected_surveys: [Optional] List of names of the selected surveys.
-        :param colors_list: [Optional] List of color strings for the precision-recall plots
-
-        Similarly to the function 'save_segmentation_predictions_sandeel' there is a loop over surveys
-        and different surveys may be considered depending on the chosen partition.
-        """
-
-        # Get colors
-        surveys_names = data_obj.surveys_predict
-        surveys_list = data_obj.get_prediction_surveys()
-
-        if len(colors_list) == 0 or len(colors_list) != len(surveys_names):
-            color_survey = dict(zip(
-                surveys_names,
-                ["blue"]*len(surveys_names))
-            )
-        else:
-            color_survey = dict(zip(
-                surveys_names,
-                colors_list)
-            )
-
-        # If not ensemble prediction
-        if model_names == None:
-            model_names = [self.model_name]
-
-        print('Get metrics')
-        print('Evaluation mode: ', self.eval_mode)
-        print(f'Evaluation on {surveys_names}')
-        assert self.eval_mode in ['all', 'fish', 'region']
-
-        # Initialize dataframe
-        appended_df = []
-
-        for j, survey in enumerate(surveys_names):
-            print(f'Evaluate metrics on survey: {survey}')
-
-            if self.data_mode == 'zarr':
-                print(f'Evaluate metrics on survey: {survey}')
-                selected_readers = [reader for reader in surveys_list if reader.name == survey]
-                selected_echograms = []
-                for reader in selected_readers:
-                    selected_echograms += list(reader.raw_file_included)
-            else:
-                print(f'Evaluate metrics on survey: {survey}')
-                selected_readers = [e for e in surveys_list if e.year == survey]
-                selected_echograms = [e.name for e in selected_surveys]
-            preds = []
-            labels = []
-
-            if self.dir_save_preds_labels is None:
-                print(
-                    'Config option --dir_save_preds_label should not be None, i.e. provide a path to the directory for saving predictions and labels')
-                continue
-            else:
-                for ii, ech in enumerate(selected_echograms):
-                    print("[Step %d/%d]" % (ii+1, len(selected_echograms)))
-                    if self.data_mode == 'zarr':
-                        ech_name = ech.split('.raw')[0]
-                    else:
-                        ech_name = ech.name
-
-                    if self.eval_mode == 'all':
-                        file_path_label = self.dir_save_preds_labels + 'relabel_morph_close/' + '{0}/'.format(
-                            ech_name) + 'label.npy'
-
-                    if self.eval_mode == 'region':
-                        file_path_label = self.dir_save_preds_labels + 'relabel_morph_close/' + '{0}/'.format(
-                            ech_name) + 'label_region.npy'
-
-                    if self.eval_mode == 'fish':
-                        file_path_label = self.dir_save_preds_labels + 'relabel_morph_close/' + '{0}/'.format(
-                            ech_name) + 'label_fish.npy'
-
-                    # Load label
-                    label = np.load(file_path_label)
-
-                    pred_avg = [None] * len(model_names)
-                    for ii, model_name in enumerate(model_names):
-                        file_path_pred = self.dir_save_preds_labels + 'regridded_predictions/' + '{0}/{1}/'.format(
-                            ech_name, model_name) + "pred.npy"
-
-                        pred = np.load(file_path_pred)
-
-                        # If there is a dimension mismatch, most likely due to errors in time vector
-                        # Time vector errors are removed in regridding. Remove time vector errors and check dimensions again
-                        if label.shape != pred.shape:
-                            print(label.shape, pred.shape, ech.name)
-                            idx = np.argwhere(ech.time_vector[1:] - ech.time_vector[:-1] < 0)
-                            label = np.delete(ech.label_numpy(), idx + 1, 1)
-                            assert label.shape == pred.shape
-
-                        pred_avg[ii] = pred.ravel()
-
-                    pred_avg = np.array(pred_avg)
-
-                    preds += [np.mean(pred_avg, axis=0)]
-                    labels += [label.ravel()]
-
-                print('Started preparing arrays of combined predictions and labels for evaluation')
-                preds = np.hstack(preds)
-                labels = np.hstack(labels)
-                print('Finished preparing arrays, start computing metrics')
-
-                # Precision, recall, F1
-                start = time.time()
-                precision, recall, thresholds = precision_recall_curve(labels[np.where(labels != -1)],
-                                                                       preds[np.where(labels != -1)],
-                                                                       pos_label=1)
-
-                F1 = 2 * (precision * recall) / (precision + recall)
-                F1[np.invert(np.isfinite(F1))] = 0
-                print(f"Computed pr, F1 in (min): {np.round((time.time() - start) / 60, 2)}")
-
-                # ROC, AUC
-                start = time.time()
-                fpr, tpr, _ = roc_curve(labels[np.where(labels != -1)],
-                                        preds[np.where(labels != -1)],
-                                        pos_label=1)
-                AUC = auc(x=fpr, y=tpr)
-                print(f"Computed roc, AUC in (min): {np.round((time.time() - start) / 60, 2)}")
-
-                print(survey, 'F1: {:.3f}, AUC:{:.3f}, Precision: {:.3f}, Recall: {:.3f}, Threshold: {:.3f}'.format(
-                    F1[np.argmax(F1)],
-                    AUC,
-                    precision[np.argmax(F1)],
-                    recall[np.argmax(F1)],
-                    thresholds[np.argmax(F1)]
-                )
-                      )
-
-                # Write metrics to pandas df
-                model_name_out = model_names[0] if len(model_names) == 0 \
-                    else f"{model_names[0].split('.')[0][:-1]}_{len(model_names)}ensemble"
-
-                df = pd.DataFrame({"survey": [survey] * len(precision),
-                                   "precision": precision,
-                                   "recall": recall})
-                save_path_metrics = os.path.join(self.dir_savefig,
-                                                 f'metrics_{self.eval_mode}_{model_name_out}_{survey}.csv')
-                df.to_csv(save_path_metrics, index=False)
+            plt.savefig(save_path_plot)
+        F1 = metrics['F1']
+        print(f'F1 score: {F1[np.argmax(F1)]}')
 
 
 class SegPipeUNet(SegPipe):
-    """ Object to represent segmentation training-prediction pipeline using the UNet model
+    """Object to represent segmentation training-prediction pipeline using the UNet model
 
-        If we wish to test other models or include metadata in the training, it is recommended to
-        create another class that also inherits the methods from the SegPipe class.
+    If we wish to test other models or include metadata in the training, it is recommended to
+    create another class that also inherits the methods from the SegPipe class.
     """
-    def __init__(self, opt):
-        super().__init__(opt=opt)
-        self.model = models.UNet(n_classes=3, in_channels=len(self.frequencies), depth=5, start_filts=64, up_mode='transpose',
-                                 merge_mode='concat')
 
-
-class DataMemm():
-    """ Object to represent memmap data features for the training-prediction pipeline """
-    def __init__(self, opt):
-        self.frequencies = opt.frequencies
-        self.window_dim = opt.window_dim
-        self.window_size = [self.window_dim, self.window_dim]
-        self.partition = opt.partition
-        self.echograms = get_data_readers(frequencies=self.frequencies, minimum_shape=self.window_dim,
-                                          mode=opt.data_mode)
-
-        # Evaluation
-        self.partition_predict = opt.partition_predict
-        self.surveys_predict = opt.selected_surveys
-        self.colors_list = opt.colors_list
-
-    # Partition data into train, test, val
-    def partition_data(self, partition='random', portion_train=0.85):
-        """
-        Choose partitioning of data
-        :param echograms: list of echogram objects
-        :partition: The different options are: 'random' OR 'year' OR 'single year' OR 'all years'
-        :param portion_train: portion of training in the train-test split
-        :return echograms used in the training and validation sets during training.
-
-        Regarding the partition options:
-        - 'random': random train-test split
-        - 'selected surveys': uses specific training years (see Olav's paper) and specific validation year
-        - 'single survey': uses only a specific year for training and validation
-        - 'all surveys': uses all available data for training and specific validation year
-        The hard-coding in these options (excluding 'random') may be reviewed.
-        """
-
-        if partition == 'random':
-            # Random partition of all echograms
-
-            # Set random seed to get the same partition every time
-            np.random.seed(seed=10)
-            np.random.shuffle(self.echograms)
-            train = self.echograms[:int(portion_train * len(self.echograms))]
-            test = self.echograms[int(portion_train * len(self.echograms)):]
-
-            # Reset random seed to generate random crops during training
-            np.random.seed(seed=None)
-
-        elif partition == 'selected surveys':
-            # Partition by year of echogram
-            train = list(filter(lambda x: any(
-                [year in x.name for year in
-                 ['D2011', 'D2012', 'D2013', 'D2014', 'D2015', 'D2016']]), self.echograms))
-            test = list(filter(lambda x: any([year in x.name for year in ['D2017']]), self.echograms))
-
-        elif partition == 'all surveys':
-            # Partition by year of echogram
-            train = list(filter(lambda x: any(
-                [year in x.name for year in
-                 ['D2007', 'D2008', 'D2009', 'D2010',
-                  'D2011', 'D2012', 'D2013', 'D2014', 'D2015', 'D2016',
-                  'D2017', 'D2018']]), self.echograms))
-            test = list(filter(lambda x: any([year in x.name for year in ['D2017']]), self.echograms))
-
-        elif partition == 'single survey':
-            # Partition by year of echogram
-            train = list(filter(lambda x: any(
-                [year in x.name for year in
-                 ['D2017']]), self.echograms))
-            test = list(filter(lambda x: any([year in x.name for year in ['D2017']]), self.echograms))
+    def __init__(self, checkpoint_dir=None, **kwargs):
+        super().__init__(checkpoint_dir, **kwargs)
+        # self.opt = opt
+        if not self.late_meta_inject:
+            self.model = models.UNet_Baseline(
+                n_classes=3,
+                in_channels=4 + get_in_channels(self.meta_channels),
+                late_meta_inject=False,
+                depth=5,
+                start_filts=64,
+                up_mode="transpose",
+                merge_mode="concat",
+            )
 
         else:
-            print("Parameter 'partition' must equal 'random' or 'selected surveys' or 'single survey' or 'all surveys'")
-
-        print('Train:', len(train), ' Test:', len(test))
-
-        return train, test
-
-
-    def sample_data(self, echograms_train=None, echograms_test=None):
-        """
-        Provides a list of the samplers used to draw samples for training and validation
-        :return list of the samplers used to draw samples for training,
-        list of the samplers used to draw samples for validation and
-        list of the sampling probabilities awarded to each of the samplers
-        """
-        if echograms_train is None or echograms_test is None:
-            echograms_train, echograms_test = self.partition_data()
-
-        samplers_train = [
-            Background(echograms_train, self.window_size),
-            Seabed(echograms_train, self.window_size),
-            School(echograms_train, 27),
-            School(echograms_train, 1),
-            SchoolSeabed(echograms_train, self.window_dim // 2, 27),
-            SchoolSeabed(echograms_train, self.window_dim // 2, 1)
-        ]
-
-        samplers_test = [
-            Background(echograms_test, self.window_size),
-            Seabed(echograms_test, self.window_size),
-            School(echograms_test, 27),
-            School(echograms_test, 1),
-            SchoolSeabed(echograms_test, self.window_dim // 2, 27),
-            SchoolSeabed(echograms_test, self.window_dim // 2, 1)
-        ]
-
-        sampler_probs = [1, 5, 5, 5, 5, 5]
-
-        assert len(sampler_probs) == len(samplers_train)
-        assert len(sampler_probs) == len(samplers_test)
-
-        return samplers_train, samplers_test, sampler_probs
-
-    def get_prediction_echograms(self):
-        """ Get list of surveys to get predictions for / calculate evaluation metrics for """
-        if self.partition_predict == 'all surveys':
-            survey_names = [2007, 2008, 2009, 2010, 2011, 2013, 2014, 2015, 2016, 2017, 2018]
-        if self.partition_predict == 'single survey' or self.partition_predict == 'selected surveys':
-            survey_names = self.surveys_predict
-        else:
-            raise ValueError(f"Partition options: Options: selected surveys, single survey, all surveys - default: 'all surveys', not {self.partition_predict}")
-
-        surveys_list = [e for e in self.echograms if e.year in survey_names]
-        return surveys_list
+            self.model = models.UNet_LateMetInject(
+                n_classes=3,
+                in_channels=4,
+                meta_in_channels=get_in_channels(self.meta_channels),
+                late_meta_inject=True,
+                depth=5,
+                start_filts=64,
+                up_mode="transpose",
+                merge_mode="concat",
+            )
 
 
-class DataZarr():
-    """ Object to represent zarr data features for the training-prediction pipeline """
-    def __init__(self, opt):
-        self.frequencies = sorted([freq*1000 for freq in opt.frequencies])
-        self.window_dim = opt.window_dim
-        self.window_size = [self.window_dim, self.window_dim]
-        self.partition = opt.partition
-        self.train_surveys = opt.train_surveys
-        self.val_surveys = opt.val_surveys
-
-        # TODO minimum shape is currently not used in the selection of zarr files
-        self.zarr_readers = get_data_readers(frequencies=self.frequencies, minimum_shape=self.window_dim,
-                                          mode=opt.data_mode)
-
-        print(f"{len(self.zarr_readers)} found:", [z.name for z in self.zarr_readers])
-
-        # Evaluation
-        self.partition_predict = opt.partition_predict
-        self.surveys_predict = opt.selected_surveys
-        self.colors_list = opt.colors_list
-
-    # Partition data into train, test, val
-    def partition_data(self, portion_train=0.85):
-        """
-        Choose partitioning of data
-        Currently only the partition 'single survey' can be used, i.e. we train and validate on the same surveys
-        This should be changed in the future when the training procedure changes according to the zarr pre-processed format
-        """
-
-        assert self.partition in ['random', 'selected surveys', 'single survey', 'all surveys'], \
-                "Parameter 'partition' must equal 'random' or 'selected surveys' or 'single survey' or 'all surveys'"
-
-        # Random partition of all surveys
-        if self.partition == 'random':
-            # Set random seed to get the same partition every time
-            np.random.seed(seed=10)
-            np.random.shuffle(self.zarr_readers)
-
-            train = self.zarr_readers[:int(portion_train * len(self.zarr_readers))]
-            test = self.zarr_readers[int(portion_train * len(self.zarr_readers)):]
-
-            # Reset random seed to generate random crops during training
-            np.random.seed(seed=None)
-
-        elif self.partition == 'selected surveys':
-            train = [survey for survey in self.zarr_readers if survey.name in self.train_surveys]
-            test = [survey for survey in self.zarr_readers if survey.name in self.val_surveys]
-        elif self.partition == 'all surveys':
-            train = [survey for survey in self.zarr_readers if survey.year in list(range(2007, 2019))]
-            test = [survey for survey in self.zarr_readers if survey.year == 2017] # use 2017 survey as test after training on all
-        else:
-            raise ValueError(
-                "Parameter 'partition' must equal 'random' or 'selected surveys' or 'single survey' or 'all surveys'")
-
-        len_train = 0
-        n_pings_train = 0
-        for ii in range(len(train)):
-            len_train += len(train[ii].raw_file_included)
-            n_pings_train += train[ii].shape[0]
-
-        len_test = 0
-        n_pings_test = 0
-        for ii in range(len(test)):
-            len_test += len(test[ii].raw_file_included)
-            n_pings_test += test[ii].shape[0]
-
-        print('Train: {} surveys, {} raw files, {} pings\nTest: {} surveys, {} raw files {} pings'.
-              format(len(train), len_train, n_pings_train, len(test), len_test, n_pings_test))
-
-        return train, test
-
-    def sample_data(self, echograms_train=None, echograms_test=None):
-        """
-        Provides a list of the samplers used to draw samples for training and validation
-        :return list of the samplers used to draw samples for training,
-        list of the samplers used to draw samples for validation and
-        list of the sampling probabilities awarded to each of the samplers
-        """
-        if echograms_train is None or echograms_test is None:
-            echograms_train, echograms_test = self.partition_data()
-
-        samplers_train = [
-            BackgroundZarr(echograms_train, self.window_size),
-            SeabedZarr(echograms_train, self.window_size),
-            SchoolZarr(echograms_train, self.window_size, 27),
-            SchoolZarr(echograms_train,  self.window_size, 1),
-            SchoolSeabedZarr(echograms_train, self.window_size, max_dist_to_seabed=self.window_size[0]//2, fish_type=27),
-            SchoolSeabedZarr(echograms_train, self.window_size, max_dist_to_seabed=self.window_size[0]//2, fish_type=1)
-        ]
-
-        samplers_test = [
-            BackgroundZarr(echograms_test, self.window_size),
-            SeabedZarr(echograms_test, self.window_size),
-            SchoolZarr(echograms_test, self.window_size, 27),
-            SchoolZarr(echograms_test, self.window_size, 1),
-            SchoolSeabedZarr(echograms_test, self.window_size, max_dist_to_seabed=self.window_size[0]//2, fish_type=27),
-            SchoolSeabedZarr(echograms_test, self.window_size, max_dist_to_seabed=self.window_size[0]//2, fish_type=1)
-        ]
-
-        sampler_probs = [1, 5, 5, 5, 5, 5]
-
-        assert len(sampler_probs) == len(samplers_train)
-        assert len(sampler_probs) == len(samplers_test)
-
-        return samplers_train, samplers_test, sampler_probs
-
-    def get_prediction_surveys(self):
-        """ Get list of surveys to get predictions for / calculate evaluation metrics for"""
-        if self.partition_predict == 'all surveys':
-            surveys_list = self.zarr_readers
-        elif self.partition_predict == 'single survey' or self.partition_predict == 'selected surveys':
-            assert len(self.surveys_predict) != 0
-            surveys_list = [survey for survey in self.zarr_readers if survey.name in self.surveys_predict]
-        else:
-            raise ValueError(f"Partition options: Options: selected surveys, single survey, all surveys - default: 'all surveys', not {self.partition_predict}")
-
-        return surveys_list
-
-
-class Config_Options(object):
-    """ Object to represent configuration options for the training-prediction pipeline """
-    def __init__(self, configuration):
-        for k, v in configuration.items():
-            setattr(self, k, v)
+def get_in_channels(meta_channels):
+    if len(meta_channels) != 0:
+        weights = {
+            "portion_year": 1,
+            "portion_day": 2,
+            "depth_rel": 1,
+            "depth_abs_surface": 1,
+            "depth_abs_seabed": 1,
+            "time_diff": 1,
+        }
+        return np.sum([meta_channels[kw] * weights[kw] for kw in weights.keys()])
+    else:
+        return 0

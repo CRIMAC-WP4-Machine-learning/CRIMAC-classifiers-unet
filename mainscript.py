@@ -6,7 +6,7 @@ import random
 import time
 import os
 from crimac_unet.pipeline_train_predict.pipeline import Config_Options, SegPipeUNet, pipeline_config
-from crimac_unet.data.echogram import get_data_readers
+from crimac_unet.data.data_reader import get_data_readers
 from crimac_unet.paths import *
 
 np.random.seed(5)

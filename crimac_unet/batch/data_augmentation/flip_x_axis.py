@@ -17,8 +17,16 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
 """
 
 import numpy as np
+
 def flip_x_axis(data, labels, echogram):
     if np.random.randint(2):
         data = np.flip(data, 2).copy()
         labels = np.flip(labels, 1).copy()
     return data, labels, echogram
+
+def flip_x_axis_metadata(data, meta, labels, echogram):
+    if np.random.randint(2):
+        data = np.flip(data, 2).copy()
+        meta = np.flip(meta, 2).copy()
+        labels = np.flip(labels, 1).copy()
+    return data, meta, labels, echogram

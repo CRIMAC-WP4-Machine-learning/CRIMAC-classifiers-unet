@@ -17,12 +17,13 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
 """
 
 import numpy as np
+from utils.np import random_point_containing
 
 class School():
     def __init__(self, echograms, window_size, fish_type='all'):
         """
-
         :param echograms: A list of all echograms in set
+        :window_size: (tuple), [height, width]
         """
 
         self.echograms = echograms
@@ -66,18 +67,18 @@ class School():
         :return: [(int) y-coordinate, (int) x-coordinate], (Echogram) selected echogram
         """
         # Random object
-        oi = np.random.randint(len(self.Schools))
-        e,o  = self.Schools[oi]
+        i = np.random.randint(len(self.Schools))
+        ech, obj = self.Schools[i]
 
         # Random pixel in object
-        pi = np.random.randint(o['n_pixels'])
-        y,x = o['indexes'][pi,:]
+        random_pixel_idx = np.random.randint(obj['n_pixels'])
+        y, x = obj['indexes'][random_pixel_idx, :]
 
-        # Adjust coordinate by random shift in y and x direction, ensures school is not always in the middle of the crop
-        x += np.random.randint(-self.window_size[0]//2, self.window_size[0]//2 + 1)
-        y += np.random.randint(-self.window_size[1]//2, self.window_size[1]//2 + 1)
+        # If window width is greater than echogram width, set x = echogram senter
+        x = random_point_containing(ech.shape[1], self.window_size[1], x)
+        y = random_point_containing(ech.shape[0], self.window_size[0], y)
 
-        return [y,x], e
+        return [y, x], ech
 
 
 class SchoolZarr():
@@ -111,14 +112,14 @@ class SchoolZarr():
         if bbox[0] == bbox[1]:
             bbox[1] += 1
         if bbox[2] == bbox[3]:
-            bbox[2] += 1
+            bbox[3] += 1
 
         x = np.random.randint(bbox[0], bbox[1])  # ping dimension
         y = np.random.randint(bbox[2], bbox[3])  # range dimension
 
         # Adjust coordinate by random shift in y and x direction, ensures school is not always in the middle of the crop
-        x += np.random.randint(-self.window_size[0]//2, self.window_size[0]//2 + 1)
-        y += np.random.randint(-self.window_size[1]//2, self.window_size[1]//2 + 1)
+        x += np.random.randint(-self.window_size[1]//2, self.window_size[1]//2 + 1)
+        y += np.random.randint(-self.window_size[0]//2, self.window_size[0]//2 + 1)
 
-        return [x, y], zarr_file
+        return [y, x], zarr_file
 

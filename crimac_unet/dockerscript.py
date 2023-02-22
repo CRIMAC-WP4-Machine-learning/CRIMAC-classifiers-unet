@@ -41,7 +41,7 @@ with open("/crimac_unet/setpyenv.json", "w") as fp:
 # Set the correct paths to the files
 from paths import *
 from pipeline_train_predict.pipeline import Config_Options, SegPipeUNet, pipeline_config, DataZarr
-from data.echogram import get_data_readers
+from data.data_reader import get_data_readers
 
 # Check paths
 print(' ')

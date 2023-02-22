@@ -16,7 +16,6 @@ License along with this library; if not, write to the Free Software
 Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
 """
 
-
 import os
 import numpy as np
 
@@ -94,7 +93,7 @@ if __name__ == '__main__':
     ### Will generate and write numpy.memmap label files without heave compensation for all echograms. ###
     ### The 'force_write' option set to True will overwrite any existing files.
 
-    from data.echogram import get_echograms
+    from data.data_reader import get_echograms
 
     force_write = False
     #write_label_files_without_heave_correction_all_echograms(force_write)

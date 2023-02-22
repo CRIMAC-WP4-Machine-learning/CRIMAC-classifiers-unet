@@ -17,22 +17,44 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
 """
 
 import numpy as np
+import xarray as xr
+from constants import *
 
 
-def convert_label_indexing(data, labels, echogram, ignore_val=-100):
+def convert_label_indexing(data, labels, center_coord, echogram, ignore_val=-100):
     '''
     Re-assign labels to: Background==0, Sandeel==1, Other==2 - all remaining are set to ignore_value.
-    :param data:
-    :param labels:
-    :param echogram:
-    :param ignore_val:
-    :return:
     '''
 
     new_labels = np.zeros(labels.shape)
     new_labels.fill(ignore_val)
-    new_labels[labels == 0] = 0
-    new_labels[labels == 27] = 1
-    new_labels[labels == 1] = 2
+    new_labels[labels == 0] = BACKGROUND
+    new_labels[labels == 27] = SANDEEL
+    new_labels[labels == 1] = OTHER
 
-    return data, new_labels, echogram
+    return data, new_labels, center_coord, echogram
+
+def convert_label_indexing_unused_species(data, labels, center_coord, echogram, ignore_val=-100):
+    '''
+    Re-assign labels to: Background==0, Sandeel==1, Other==2 - all remaining are set to ignore_value.
+    '''
+
+    _, new_labels, _, _ = convert_label_indexing(data, labels, center_coord, echogram)
+
+    # Mark unused species
+    new_labels[(labels > 0) & (labels != 1) & (labels != 27)] = LABEL_UNUSED_SPECIES
+
+    return data, new_labels, center_coord, echogram
+
+def convert_label_indexing_xr(data, labels, center_coord, echogram, ignore_val=-100):
+    '''
+    Re-assign labels to: Background==0, Sandeel==1, Other==2 - all remaining are set to ignore_value.
+    '''
+
+    new_labels = xr.ones_like(labels)*ignore_val
+    new_labels = xr.where(new_labels == 0, BACKGROUND, new_labels)
+    new_labels = xr.where(new_labels == 27, SANDEEL, new_labels)
+    new_labels = xr.where(new_labels == 1, OTHER, new_labels)
+
+
+    return data, new_labels, center_coord, echogram

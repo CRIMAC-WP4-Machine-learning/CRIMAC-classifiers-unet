@@ -1,4 +1,22 @@
 """"
+Copyright 2021 the Norwegian Computing Center
+
+This library is free software; you can redistribute it and/or
+modify it under the terms of the GNU Lesser General Public
+License as published by the Free Software Foundation; either
+version 3 of the License, or (at your option) any later version.
+
+This library is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+Lesser General Public License for more details.
+
+You should have received a copy of the GNU Lesser General Public
+License along with this library; if not, write to the Free Software
+Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
+"""
+
+""""
 The U-Net is trained using (somewhat) randomly selected data patches.
 The patches are selected using various samplers, which each sample data with a particular characteristic.
 """
@@ -12,14 +30,14 @@ from batch.samplers.background import BackgroundZarr
 from batch.samplers.school import SchoolZarr
 from batch.samplers.seabed import SeabedZarr
 from batch.dataset import Dataset
-from data.echogram import DataReaderZarr
+from data.data_reader import DataReaderZarr
 
 from batch.data_transforms.remove_nan_inf import remove_nan_inf
 from batch.data_transforms.db_with_limits import db_with_limits
 from batch.label_transforms.convert_label_indexing import convert_label_indexing
 from batch.label_transforms.refine_label_boundary import refine_label_boundary
-from batch.combine_functions import CombineFunctions
-from data.normalization import db
+from utils.combine_functions import CombineFunctions
+from batch.data_transforms.db_with_limits import db
 
 
 
