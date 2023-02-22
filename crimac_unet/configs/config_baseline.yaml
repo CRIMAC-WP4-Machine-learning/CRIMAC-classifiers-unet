@@ -1,0 +1,74 @@
+### Config options: General (Training and Prediction)
+# Seed (to be fixed to obtain reproducible results
+random_seed: 10
+# Frequencies to be used (default: all 4 channels)
+frequencies: [18, 38, 120, 200]
+# Input data type (Options: zarr or memm)
+data_mode: 'memm'
+# Number of data loading workers (default: 4)
+num_workers: 10
+# The height / width of the input image patch to network (default: 256)
+patch_size: [256, 256]
+# Metadata channels (can be empty list if no metadata is to be used or should be a dictionnary of type of metadata and associated bolean)
+meta_channels: []
+  #{'portion_year': False,
+  #      'portion_day': False,
+  #      'depth_rel': False,
+  #      'depth_abs_surface': True,
+  #      'depth_abs_seabed': False,
+  #      'time_diff': False
+  #      }
+# Whether to use late injection of metadata
+late_meta_inject: False
+# Loss to use (Options: CE-> cross-entropy, Focal -> focal loss, Dice -> dice loss, Combined -> combination focal and CE)
+loss_type: CE
+# Input batch size (default: 16)
+batch_size: 16
+# Learning rate (default: 0.005)
+lr: 0.005
+# Learning rate reduction (default: 0.5)
+lr_reduction: 0.5
+# SGD momentum (default: 0.95)
+momentum: 0.95
+# Number of test batches (default: 1000)
+test_iter: 1000
+# Number of batches to wait before logging training/validation status (default: 1000)
+log_step: 2500
+# Number of batches to wait before updating learning rate (default: 1000)
+lr_step: 1000
+# Number of training batches (default: 10000)
+iterations: 15000
+# Partitioning of training data (Options: random, selected surveys, single survey, all surveys - default: 'all surveys')
+partition_train: 'selected surveys'
+# List with the names of the selected surveys for training
+train_surveys: [2011, 2013, 2014, 2015, 2016]
+# List of validation surveys
+validation_surveys: [2017]
+# Whether to use save the trained model
+save_model_params: True
+
+### Config options: Inference
+
+# Evaluation model (Options: all, region, fish - default:'all')
+eval_mode: 'all'
+# Partitioning of the data for running evaluation (Options: selected surveys or all surveys - default: 'all surveys')
+partition_predict: 'all surveys'
+# List with the names of the selected survey
+evaluation_surveys: []
+# Whether the labels are available
+labels_available: True
+# Overlap between neighboring patches after gridding data (minimise edge effects)
+patch_overlap: 20
+# "Preload" a certain nr of pings during inference (evaluation and saving predictions), before splitting into patches.
+# This speeds up the process considerably compared to loading the patches individually.
+preload_n_pings: 0
+
+### Config options: Save predictions
+
+# Save predictions for list of surveys
+save_prediction_surveys: []
+# Whether to resume writing zarr predictions for a survey
+resume_writing: False
+# Whether to save the labels
+save_labels: True
+
