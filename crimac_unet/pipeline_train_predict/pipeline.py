@@ -29,7 +29,6 @@ import dask
 from tqdm import tqdm
 import torch.multiprocessing
 
-from utils.losses import FocalLoss, DiceLoss, CombinedCEFocalLoss, DiceCELoss
 import models.unet as models
 from constants import *
 
@@ -137,14 +136,6 @@ class SegPipe:
 
         if self.loss_type == "CE":
             criterion = nn.CrossEntropyLoss(weight=weight)
-        elif self.loss_type == "Focal":
-            criterion = FocalLoss(weight=weight, gamma=3)
-        elif self.loss_type == "Dice":
-            criterion = DiceLoss(weight=None)
-        elif self.loss_type == "Combined":
-            criterion = CombinedCEFocalLoss(weight=weight, gamma=3, t1=0.4, t2=1.6)
-        elif self.loss_type == "DiceCE":
-            criterion = DiceCELoss(weight=weight, lambda_dice=1, lambda_ce=1)
         else:
             raise ValueError("`loss_type` not recognized")
         return criterion

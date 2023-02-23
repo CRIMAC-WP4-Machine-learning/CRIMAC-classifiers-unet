@@ -1,21 +1,3 @@
-""""
-Copyright 2021 the Norwegian Computing Center
-
-This library is free software; you can redistribute it and/or
-modify it under the terms of the GNU Lesser General Public
-License as published by the Free Software Foundation; either
-version 3 of the License, or (at your option) any later version.
-
-This library is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
-Lesser General Public License for more details.
-
-You should have received a copy of the GNU Lesser General Public
-License along with this library; if not, write to the Free Software
-Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
-"""
-
 import time
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -59,7 +41,6 @@ def validate_model_survey_zarr(readers, segpipe, meta_channels, patch_size, patc
                                save_path_metrics,
                                save_path_plot,
                                preload_n_pings,
-                               data_mode,
                                **kwargs):
     use_metadata = is_use_metadata(meta_channels)
     frequencies = segpipe.frequencies
@@ -69,46 +50,33 @@ def validate_model_survey_zarr(readers, segpipe, meta_channels, patch_size, patc
     label_transform = define_label_transform_test(frequencies=frequencies, label_masks=eval_mode,
                                                   patch_overlap=patch_overlap)
 
-    all_valid_predictions = []
-    all_valid_labels = []
+    assert len(readers) == 1, print("Current evaluation code assumes one zarr file contains an entire survey")
+
     for reader in readers:
-        valid_ping_ranges = reader.get_valid_pings()
-        splits = get_data_split(valid_ping_ranges, preload_n_pings)
+        assert preload_n_pings == 0, print("Current evaluation code for zarr only works when 'preloading_n_pings' = 0")
 
-        for (start_ping, end_ping) in tqdm(splits):
-            # Create data loader for region
-            dataset = DatasetGriddedReader(reader, patch_size, frequencies, meta_channels=meta_channels,
-                                           grid_start=start_ping,
-                                           grid_end=end_ping,
-                                           patch_overlap=patch_overlap,
-                                           augmentation_function=None,
-                                           label_transform_function=label_transform,
-                                           data_transform_function=data_transform,
-                                           grid_mode='all')
-            dataloader = DataLoader(
-                dataset,
-                batch_size=batch_size,
-                shuffle=False,
-                num_workers=num_workers,
-                worker_init_fn=seed_worker,
-            )
+        dataset = DatasetGriddedReader(reader, patch_size, frequencies,
+                                       meta_channels=meta_channels,
+                                       grid_start=None,
+                                       grid_end=None,
+                                       patch_overlap=patch_overlap,
+                                       data_preload=False,
+                                       augmentation_function=None,
+                                       label_transform_function=label_transform,
+                                       data_transform_function=data_transform,
+                                       grid_mode='all')
 
-            labels, preds, _ = segpipe.get_predictions_dataloader(dataloader, disable_tqdm=True)
-            labels, preds = segpipe.select_valid_predictions(labels=labels, preds=preds)
+        dataloader = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            worker_init_fn=seed_worker,
+        )
 
-            all_valid_predictions += list(preds)
-            all_valid_labels += list(labels)
-
-    # Compute metrics after collecting all preds and labels
-    all_valid_predictions = np.array(all_valid_predictions).astype(np.float16)
-    all_valid_labels = np.array(all_valid_labels).astype(np.int8)
-
-    # Compute metrics
-    metrics_dict = segpipe.compute_evaluation_metrics(labels=all_valid_labels, preds=all_valid_predictions)
-
-    # Save metrics and plot
-    save_metrics_dict(metrics_dict, save_path_metrics=os.path.join(save_path_metrics, f"{survey}_test.csv"))
-    save_plot(metrics_dict, save_path_plot=os.path.join(save_path_plot, f"{survey}_pr.png"))
+        segpipe.validate_model_testing(dataloader,
+                                       save_path_metrics=os.path.join(save_path_metrics, f"{survey}_test.csv"),
+                                       save_path_plot=os.path.join(save_path_plot, f"{survey}_pr.png"))
 
 
 def validate_model_survey_memm(readers, segpipe, meta_channels, patch_size, patch_overlap, eval_mode, batch_size,
@@ -162,7 +130,7 @@ if __name__ == "__main__":
     segpipe = SegPipeUNet(**config_args, experiment_name=experiment_name)
     segpipe.load_model_params(checkpoint_path=config_args["checkpoint_path"])
 
-    print('loading data partition object...')
+    print(f'\nLoading {config_args["data_mode"]} data partition object...')
     start = time.time()
     if config_args["data_mode"] == 'zarr':
         data_partition_object = DataZarr(**config_args)
