@@ -262,7 +262,7 @@ def save_reader_predictions_memm(reader, segpipe, meta_channels,
             fill_out_array(out_array, pred_patch, label_patch, center_coordinates, ping_start=0)
 
     # After array has been filled, save as npy-file
-    np.save(target_dname.replace('.npy', '_label.npy'), out_array)
+    np.save(target_dname, out_array)
 
 
 if __name__ == "__main__":
