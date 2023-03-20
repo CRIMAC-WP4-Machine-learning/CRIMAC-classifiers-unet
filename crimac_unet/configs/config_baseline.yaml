@@ -6,7 +6,7 @@ frequencies: [18, 38, 120, 200]
 # Input data type (Options: zarr or memm)
 data_mode: 'memm'
 # Number of data loading workers (default: 4)
-num_workers: 10
+num_workers: 4
 # The height / width of the input image patch to network (default: 256)
 patch_size: [256, 256]
 # Metadata channels (can be empty list if no metadata is to be used or should be a dictionnary of type of metadata and associated bolean)
@@ -23,7 +23,7 @@ late_meta_inject: False
 # Loss to use (Options: CE-> cross-entropy, Focal -> focal loss, Dice -> dice loss, Combined -> combination focal and CE)
 loss_type: CE
 # Input batch size (default: 16)
-batch_size: 16
+batch_size: 4
 # Learning rate (default: 0.005)
 lr: 0.005
 # Learning rate reduction (default: 0.5)
@@ -61,7 +61,7 @@ labels_available: True
 patch_overlap: 20
 # "Preload" a certain nr of pings during inference (evaluation and saving predictions), before splitting into patches.
 # This speeds up the process considerably compared to loading the patches individually.
-preload_n_pings: 0
+preload_n_pings: 1000
 
 ### Config options: Save predictions
 

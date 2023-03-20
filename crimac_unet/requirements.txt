@@ -41,12 +41,14 @@ setuptools==52.0.0.post20210125
 six==1.15.0
 sortedcontainers==2.3.0
 tblib==1.7.0
+tensorboard==2.10.0
 threadpoolctl==2.1.0
 toolz==0.11.1
 torch==1.7.1
 torchaudio==0.7.0a0+a853dff
 torchvision==0.8.2
 tornado==6.1
+tqdm==4.56.0
 typing-extensions==3.7.4.3
 wheel==0.36.2
 xarray==0.17.0

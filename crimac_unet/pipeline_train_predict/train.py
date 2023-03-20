@@ -150,7 +150,7 @@ if __name__ == '__main__':
     os.system(f"cp {yaml_path} {log_dir}")
 
     # save a copy of the code in the tensorboard
-    copy_source(log_dir)
+    # copy_source(log_dir)
 
     # Train model
     start = time.time()

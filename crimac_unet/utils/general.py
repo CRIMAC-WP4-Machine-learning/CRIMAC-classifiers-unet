@@ -36,9 +36,14 @@ def load_yaml_config(path_configuration):
 
 
 def get_argparse_parser(mode='train'):
-    assert mode in ['train', 'eval', 'save_predict']
+    assert mode in ['train', 'eval', 'save_predict', 'docker_predict']
 
     parser = argparse.ArgumentParser(argument_default=argparse.SUPPRESS)
+    if mode == 'docker_predict':
+        parser.add_argument("--save_model_params", action="store_true", default=False)
+
+        return parser
+
     parser.add_argument(
         "--num_workers",
         dest="num_workers",
