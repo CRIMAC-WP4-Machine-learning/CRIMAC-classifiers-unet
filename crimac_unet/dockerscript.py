@@ -48,6 +48,8 @@ print('Check paths:')
 print('Path to sv file:', path_to_sv_file)
 print('Path to prediction file', PRED_FILE)
 
+print('\nCUDA is available:', str(torch.cuda.is_available()))
+
 # Configuration options
 argparse_args = get_argparse_parser(mode="docker_predict").parse_args()
 configuration = load_yaml_config(CONFIG_FILE)
@@ -57,8 +59,7 @@ config_args = parse_config_options(configuration, argparse_args)
 freqs = config_args['frequencies']
 config_args['frequencies'] = [f*1000 for f in freqs]
 
-print()
-print('Key configuration arguments (inference):')
+print('\nKey configuration arguments (inference):')
 relevant_keys = ['frequencies', 'num_workers', 'patch_size', 'batch_size',
                  'preload_n_pings', 'resume_writing']
 for rel_key in relevant_keys:
