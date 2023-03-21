@@ -1,7 +1,7 @@
 ### Config options: General (Training and Prediction)
 
 # Input data type (Options: zarr or memm)
-data_mode: 'zarr'
+data_mode: 'memm'
 # Frequencies used for training and predictions
 frequencies: [18, 38, 120, 200]
 # Cuda device id (default: 0) if not available cpu is used
@@ -29,9 +29,9 @@ iterations: 2000
 # Partitioning of training data (Options: random, selected surveys, single survey, all surveys - default: 'all surveys')
 partition: 'selected surveys'
 # List with the names of the selected surveys for training. For memmap: survey years. For zarr: Survey names (ie 'S2007205')
-train_surveys: ['S2011206', 'S2013842', 'S2014807', 'S2015837', 'S2016837']
+train_surveys: [2011, 2013, 2014, 2015, 2016]
 # List of validation survey
-val_surveys: ['S2017843']
+val_surveys: [2017]
 # Whether to use save the trained model
 save_model_params: True
 
@@ -44,7 +44,7 @@ model_names: []
 # Partitioning of the data for the inference (Options: selected surveys, single survey, all surveys - default: 'all surveys')
 partition_predict: 'all surveys'
 # List with the names of the selected survey
-selected_surveys: ['S2019847_0511']
+selected_surveys: []
 # List with strings referring to colors
 colors_list: ['blue']
 # Whether to save the labels

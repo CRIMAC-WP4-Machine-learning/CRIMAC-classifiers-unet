@@ -20,6 +20,21 @@ from __future__ import division
 import numpy as np
 from scipy.linalg import expm, norm
 
+def random_point_containing(data_length, window_length, point, slack=20):
+    if data_length <= window_length:
+        return data_length // 2
+
+    half_window_length= window_length // 2 - slack
+    low_bound = max(half_window_length, point - half_window_length)
+    high_bound = min(data_length - half_window_length, point + half_window_length)
+
+    if high_bound == low_bound:
+        return high_bound
+
+    random_point = np.random.randint(low_bound, high_bound)
+    return random_point
+
+
 ########################################################################################################################
 ################################### MULTI DIMENSIONAL SUPPORT ##########################################################
 def getGrid(siz):
@@ -51,19 +66,19 @@ def coordinate_map(cube):
 
 def linear_interpolation(input_array, output_inds, boundary_correction = True, boundary_val=0, out_shape=None):
     if input_array.ndim == 1:
-        return _linear_interpolation_1D(input_array, output_inds, boundary_correction=boundary_correction, out_shape=out_shape)
+        return _linear_interpolation_1D(input_array, output_inds, outside_val=boundary_val, boundary_correction=boundary_correction, out_shape=out_shape)
     elif input_array.ndim == 2:
-        return linear_interpolation_2D(input_array, output_inds, boundary_correction=boundary_correction, out_shape=out_shape)
+        return linear_interpolation_2D(input_array, output_inds, outside_val=boundary_val,boundary_correction=boundary_correction, out_shape=out_shape)
     elif input_array.ndim == 3:
-        return _linear_interpolation_3D(input_array, output_inds, boundary_correction = boundary_correction, boundary_val=boundary_val,out_shape=out_shape)
+        return _linear_interpolation_3D(input_array, output_inds, outside_val=boundary_val,boundary_correction = boundary_correction, boundary_val=boundary_val,out_shape=out_shape)
 
 def nearest_interpolation(input_array, output_inds, boundary_correction = True, boundary_val=0, out_shape=None):
     if input_array.ndim == 1:
-        return _nearest_interpolation_1D(input_array, output_inds, boundary_correction=boundary_correction, out_shape=out_shape)
+        return _nearest_interpolation_1D(input_array, output_inds, outside_val=boundary_val,boundary_correction=boundary_correction, out_shape=out_shape)
     elif input_array.ndim == 2:
-        return _nearest_interpolation_2D(input_array, output_inds, boundary_correction=boundary_correction, boundary_val=boundary_val,out_shape=out_shape)
+        return _nearest_interpolation_2D(input_array, output_inds, boundary_correction=boundary_correction, boundary_val=boundary_val, out_shape=out_shape)
     elif input_array.ndim == 3:
-        return _nearest_interpolation_3D(input_array, output_inds, boundary_correction = boundary_correction,out_shape=out_shape)
+        return _nearest_interpolation_3D(input_array, output_inds, outside_val=boundary_val,boundary_correction = boundary_correction,out_shape=out_shape)
 
 ########################################################################################################################
 ################################### 3D SUPPORT #########################################################################
@@ -234,6 +249,8 @@ def linear_interpolation_2D(input_array, indices, outside_val=0, boundary_correc
 
     x0_0 = ind_0.astype(np.integer)
     x1_0 = ind_1.astype(np.integer)
+
+    # Why this?
     x0_1 = x0_0 + 1
     x1_1 = x1_0 + 1
 
@@ -259,9 +276,8 @@ def linear_interpolation_2D(input_array, indices, outside_val=0, boundary_correc
 
     output.setflags(write=1)
 
-
     if boundary_correction:
-        output[inds_out_of_range] = 0
+        output[inds_out_of_range] = outside_val
 
     if out_shape is not None:
         output = np.reshape(output, out_shape)
@@ -310,8 +326,8 @@ def _linear_interpolation_1D(input_array, indices, outside_val=0, boundary_corre
         inds_out_of_range = (x0_0 < 0) | (x0_1 < 0) |   \
                             (x0_0 >= N0) | (x0_1 >= N0)
 
-        x0_0[inds_out_of_range] = 0
-        x0_1[inds_out_of_range] = 0
+        x0_0[inds_out_of_range] = outside_val
+        x0_1[inds_out_of_range] = outside_val
 
     w0 = ind_0 - x0_0
     # Replace by this...
@@ -320,11 +336,46 @@ def _linear_interpolation_1D(input_array, indices, outside_val=0, boundary_corre
               input_array[x0_1] * w0)
 
     if boundary_correction:
-        output[inds_out_of_range] = 0
+        output[inds_out_of_range] = outside_val
 
         if out_shape is not None:
             output = np.reshape(output, out_shape)
 
     return output
 
+
+def new_get_crop_2d(input_array, grid, boundary_val=100):
+    ys = grid[0, :].astype(int)
+    xs = grid[1, :].astype(int)
+
+    N0, N1 = input_array.shape
+
+    inds_out_of_range = (ys < 0) | (xs < 0) | (ys >= N0) | (xs >= N1)
+
+    ys[inds_out_of_range] = 0
+    xs[inds_out_of_range] = 0
+
+    out = input_array[ys, xs]
+    out[inds_out_of_range] = boundary_val
+    return out
+
+def new_get_crop_3d(input_array, grid, boundary_val=100):
+    ys = grid[0, :].astype(int)
+    xs = grid[1, :].astype(int)
+
+    _, N0, N1 = input_array.shape
+
+    inds_out_of_range = (ys < 0) | (xs < 0) | (ys >= N0) | (xs >= N1)
+
+    ys[inds_out_of_range] = 0
+    xs[inds_out_of_range] = 0
+
+    out = input_array[:, ys, xs]
+    out[:, inds_out_of_range] = boundary_val
+    return out
+
+
+def patch_coord_to_data_coord(patch_coords, center_coord, patch_size):
+    data_coord = patch_coords + center_coord - patch_size//2 + 1
+    return data_coord.astype(int)
 

@@ -23,8 +23,8 @@ from utils.np import getGrid, nearest_interpolation
 class Background():
     def __init__(self, echograms, window_size):
         """
-
         :param echograms: A list of all echograms in set
+        :param window_size: (tuple), [height, width]
         """
         self.echograms = echograms
         self.window_size = window_size
@@ -32,24 +32,35 @@ class Background():
 
     def get_sample(self):
         """
-
         :return: [(int) y-coordinate, (int) x-coordinate], (Echogram) selected echogram
         """
-        #Random echogram
-        ei = np.random.randint(len(self.echograms))
+        # Random echogram
+        ech_index = np.random.randint(len(self.echograms))
+        ech = self.echograms[ech_index]
 
-        #Random x,y-loc above seabed
-        x = np.random.randint(self.window_size[1]//2, self.echograms[ei].shape[1] - self.window_size[1]//2)
-        y = np.random.randint(0, self.echograms[ei].get_seabed()[x])
+        # Random x, y-loc above seabed
+        # If window width is greater than echogram width, set x = echogram senter
+        if ech.shape[1] <= self.window_size[1]:
+            x = ech.shape[1]//2
+        else:
+            half_patch_width = self.window_size[1] // 2 - 20
+            x = np.random.randint(half_patch_width, ech.shape[1]-half_patch_width)
 
-        #Check if there is any fish-labels in crop
-        grid = getGrid(self.window_size) + np.expand_dims(np.expand_dims([y,x], 1), 1)
-        labels = nearest_interpolation(self.echograms[ei].label_memmap(), grid, boundary_val=0, out_shape=self.window_size)
+        # Select random location above seabed, or in the middle of the echogram if window height > echogram height
+        seabed = int(ech.get_seabed(x))
+        if seabed <= self.window_size[0]:
+            y = ech.shape[0]//2
+        else:
+            y = np.random.randint(self.window_size[0]//2, seabed-self.window_size[0]//2)
+
+        # Check if there is any fish-labels in crop
+        grid = getGrid(self.window_size) + np.expand_dims(np.expand_dims([y, x], 1), 1)
+        labels = nearest_interpolation(ech.label_memmap(), grid, boundary_val=0, out_shape=self.window_size)
 
         if np.any(labels != 0):
             return self.get_sample() #Draw new sample
 
-        return [y,x], self.echograms[ei]
+        return [y, x], ech
 
 
 class BackgroundZarr():
@@ -57,7 +68,7 @@ class BackgroundZarr():
         """
         Sample from zarr-files
         :param zarr_files: (list)
-        :param window_size: (tuple)
+        :param window_size: (tuple), height, width
         """
         self.zarr_files = zarr_files
         self.window_size = window_size
@@ -66,17 +77,18 @@ class BackgroundZarr():
         # Select random zarr file in list
         zarr_rand = np.random.choice(self.zarr_files)
 
-        # select random ping in zarr file
-        x = np.random.randint(self.window_size[1] // 2, zarr_rand.shape[0] - self.window_size[1] // 2)
+        # select random valid ping range in zarr file
+        valid_pings_ranges = zarr_rand.get_valid_pings()
+        start_ping, end_ping = valid_pings_ranges[np.random.randint(len(valid_pings_ranges))]
+
+        x = np.random.randint(start_ping, end_ping)
 
         # Get y-loc above seabed
         seabed = int(zarr_rand.get_seabed(x))
 
-
         if seabed - self.window_size[0]//2 <= 0:
             return self.get_sample()
         y = np.random.randint(0, seabed-self.window_size[0]//2)
-
 
         # Check if any fish_labels in the crop
         labels = zarr_rand.get_label_slice(idx_ping=x-self.window_size[1]//2,
@@ -87,7 +99,7 @@ class BackgroundZarr():
                                            return_numpy=False)
 
         # Check if any fish-labels in crop
-        if (labels > 0).any() or (labels == -1).all(): # Possible bottleneck?
+        if (labels > 0).any(): # Possible bottleneck?
             return self.get_sample()
 
-        return [x, y], zarr_rand
+        return [y, x], zarr_rand

@@ -16,19 +16,19 @@ License along with this library; if not, write to the Free Software
 Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
 """
 
-
 import os
 
 import paths
-from data.echogram import Echogram
-
+from data.data_reader import Echogram
 
 def save_all_seabeds():
     """
     Loop through all echograms and generate seabed-estimates
     :return:
     """
-    path_to_echograms = paths.path_to_echograms()
+    configuration = paths.pipeline_config()
+    opt = paths.Config_Options(configuration)
+    path_to_echograms = opt.path_to_echograms
     echogram_names = os.listdir(path_to_echograms)
     echograms = [Echogram(path_to_echograms + e) for e in echogram_names]
     for e in echograms:

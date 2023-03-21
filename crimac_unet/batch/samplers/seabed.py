@@ -17,13 +17,14 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
 """
 
 import numpy as np
-import time
+from utils.np import random_point_containing
 
 
-class Seabed():
+class Seabed:
     def __init__(self, echograms, window_size):
         """
         :param echograms: A list of all echograms in set
+        :param window_size: (tuple) [height, width]
         """
         self.echograms = echograms
         self.window_size = window_size
@@ -33,25 +34,27 @@ class Seabed():
         :return: [(int) y-coordinate, (int) x-coordinate], (Echogram) selected echogram
         """
         # Random echogram
-        ei = np.random.randint(len(self.echograms))
+        ech_index = np.random.randint(len(self.echograms))
+        ech = self.echograms[ech_index]
 
-        # Random x-loc
-        x = np.random.randint(self.window_size[1]//2, self.echograms[ei].shape[1] - (self.window_size[1]//2))
-        y = self.echograms[ei].get_seabed()[x] + np.random.randint(-self.window_size[0], self.window_size[0])
+        # Random x-loc with y-location of seabed
+        # If window width is greater than echogram width, set x = echogram senter
+        if ech.shape[1] <= self.window_size[1]:
+            x = ech.shape[1]//2
+        else:
+            half_patch_width = self.window_size[1] // 2 - 20
+            x = np.random.randint(half_patch_width, ech.shape[1]-half_patch_width)
 
-        # "adjust" y so that seabed is not always in the middle of the crop
-        y += np.random.randint(-self.window_size[1]//2, self.window_size[1]//2 + 1)
+        # Get seabed
+        seabed = int(ech.get_seabed(x))
 
-        # Correct y if window is not inside echogram
-        if y < self.window_size[0]//2:
-            y = self.window_size[0]//2
-        if y > self.echograms[ei].shape[0] - self.window_size[0]//2:
-            y = self.echograms[ei].shape[0] - self.window_size[0]//2
+        # If window height is greater than seabed depth, set y = echogram senter
+        y = random_point_containing(ech.shape[0], self.window_size[0], seabed)
 
-        return [y,x], self.echograms[ei]
+        return [y, x], ech
 
 
-class SeabedZarr():
+class SeabedZarr:
     def __init__(self, zarr_files, window_size=(256, 256)):
         self.zarr_files = zarr_files
         self.window_size = window_size
@@ -70,6 +73,6 @@ class SeabedZarr():
             return self.get_sample()
 
         # "adjust" y so that seabed is not always in the middle of the crop
-        y += np.random.randint(-self.window_size[1]//2, self.window_size[1]//2 + 1)
+        y += np.random.randint(-self.window_size[0] // 2, self.window_size[0] // 2 + 1)
 
-        return [x, y], zarr_rand
+        return [y, x], zarr_rand

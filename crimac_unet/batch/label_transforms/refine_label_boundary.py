@@ -18,24 +18,25 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
 
 import numpy as np
 from scipy.ndimage.morphology import binary_closing
+from constants import *
+
 
 class refine_label_boundary():
     def __init__(self,
                  frequencies=[18, 38, 120, 200],
                  threshold_freq=200,
                  threshold_val=[1e-7, 1e-4],
-                 ignore_val=-100,
                  ignore_zero_inside_bbox=True
                  ):
         self.frequencies = frequencies
         self.threshold_freq = threshold_freq
         self.threshold_val = threshold_val
-        self.ignore_val = ignore_val
         self.ignore_zero_inside_bbox=ignore_zero_inside_bbox
 
-    def __call__(self, data, labels, echogram):
+    def __call__(self, data, labels, center_coord, echogram):
         '''
         Refine existing labels based on thresholding with respect to pixel values in image.
+        Low intensity areas near schools are set to LABEL_REFINE_BOUNDARY_VAL
         :param data: (numpy.array) Image (C, H, W)
         :param labels: (numpy.array) Labels corresponding to image (H, W)
         :param echogram: (Echogram object) Echogram
@@ -56,12 +57,12 @@ class refine_label_boundary():
             [0, 0, 1, 1, 1, 0, 0]
         ])
 
-        if self.ignore_val == None:
-            self.ignore_val = 0
+        # if self.ignore_val == None:
+        #     self.ignore_val = 0
 
         # Set new label for all pixels inside bounding box that are below threshold value
         if self.ignore_zero_inside_bbox:
-            label_below_threshold = self.ignore_val
+            label_below_threshold = LABEL_REFINE_BOUNDARY_VAL
         else:
             label_below_threshold = 0
 
@@ -71,12 +72,33 @@ class refine_label_boundary():
         # Relabel
         new_labels = labels.copy()
 
-        mask_threshold = (labels != 0) & (labels != self.ignore_val) & (data[freq_idx, :, :] > self.threshold_val[0]) & (
-                    data[freq_idx, :, :] < self.threshold_val[1])
-        mask_threshold_closed = binary_closing(mask_threshold, structure=closing)
-        mask = (labels != 0) & (labels != self.ignore_val) & (mask_threshold_closed == 0)
+        # Relevant labels -> this is to mimic previous version
+        # NB this matches previous version but may not be the best idea. Causes strange gaps
 
-        new_labels[mask] = label_below_threshold
-        new_labels[labels == self.ignore_val] = self.ignore_val
+        # TODO There is a rare bug where all labels are set = LABEL_BOUNDARY_VAL, which caused the
+        # training to crash. Was unable to recreate it by drawing 160k random samples. The check
+        # prevents the crash
+        idxs = np.argwhere(new_labels != LABEL_BOUNDARY_VAL)
+        if len(idxs) == 0:
+            print(f"WARNING - patch with center coordinate {center_coord} for {echogram.name} is outside data boundary")
+            return data, new_labels, center_coord, echogram
+        else:
+            crop_y0 = np.min(idxs[:, 0])
+            crop_y1 = np.max(idxs[:, 0]) + 1
+            crop_x0 = np.min(idxs[:, 1])
+            crop_x1 = np.max(idxs[:, 1]) + 1
+            relevant_labels = new_labels[crop_y0:crop_y1, crop_x0:crop_x1]
 
-        return data, new_labels, echogram
+            # TODO will labels > 0 do the same trick?
+            mask_threshold = (labels > 0) & (data[freq_idx, :, :] > self.threshold_val[0]) & (
+                        data[freq_idx, :, :] < self.threshold_val[1])
+
+            mask_threshold_closed = binary_closing(mask_threshold[crop_y0:crop_y1, crop_x0:crop_x1], structure=closing)
+
+            mask = np.zeros_like(new_labels).astype(bool)
+            mask[crop_y0:crop_y1, crop_x0:crop_x1] = (mask_threshold_closed == 0) & (relevant_labels > 0)
+
+            new_labels[mask] = label_below_threshold
+            new_labels[labels == LABEL_IGNORE_VAL] = LABEL_IGNORE_VAL
+
+            return data, new_labels, center_coord, echogram

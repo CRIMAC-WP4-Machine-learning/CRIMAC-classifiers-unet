@@ -1,20 +1,3 @@
-""""
-Copyright 2021 the Norwegian Computing Center
-
-This library is free software; you can redistribute it and/or
-modify it under the terms of the GNU Lesser General Public
-License as published by the Free Software Foundation; either
-version 3 of the License, or (at your option) any later version.
-
-This library is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
-Lesser General Public License for more details.
-
-You should have received a copy of the GNU Lesser General Public
-License along with this library; if not, write to the Free Software
-Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
-"""
 
 import os
 import numpy as np
@@ -22,9 +5,7 @@ import json
 import h5py
 from datetime import datetime, timedelta
 
-from paths import path_to_korona_data
-from paths import path_to_korona_transducer_depths
-
+from paths import pipeline_config, Config_Options
 
 def timevector_to_datetime(time_vector):
     """
@@ -61,8 +42,9 @@ def get_korona_list_from_json(path_json_korona):
 
 
 def get_transducer_depths(echogram):
-
-    root_depths = path_to_korona_transducer_depths()
+    configuration = pipeline_config()
+    opt = Config_Options(configuration)
+    root_depths = opt.path_to_korona_transducer_depths
     file_path = root_depths + echogram.name + '.h5'
     assert os.path.isfile(file_path), file_path + ' does not exist.'
 
@@ -150,16 +132,18 @@ if __name__ == '__main__':
     ### Example of use ###
 
     from random import shuffle
-    from data.echogram import get_echograms
+    from data.data_reader import get_echograms
     from batch.label_transforms.convert_label_indexing import convert_label_indexing
 
     year = 2010
-    root_json_korona = path_to_korona_data()
+    configuration = pipeline_config()
+    opt = Config_Options(configuration)
+    root_json_korona = opt.path_to_korona_data
     path_json_korona = root_json_korona + "korona_" + str(year) + ".json"
     korona_list = get_korona_list_from_json(path_json_korona=path_json_korona)
 
     freqs = [18, 38, 120, 200]
-    echograms_year = get_echograms(years=year, frequencies=freqs, minimum_shape=256)
+    echograms_year = get_echograms(years=year, frequencies=freqs, min_size=256)
     shuffle(echograms_year)
 
     for i, ech in enumerate(echograms_year):

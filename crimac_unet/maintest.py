@@ -8,7 +8,7 @@ import numpy as np
 import random
 import time
 from pipeline_train_predict.pipeline import Config_Options, SegPipeUNet, pipeline_config
-from data.echogram import get_data_readers
+from data.data_reader import get_data_readers
 from paths import *
 
 # Run the predictions

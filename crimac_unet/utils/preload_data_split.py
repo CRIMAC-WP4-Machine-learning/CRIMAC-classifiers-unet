@@ -18,5 +18,13 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
 
 import numpy as np
 
-def db(data, eps=1e-10):
-    return 10 * np.log10(data + eps)
+
+def get_data_split(valid_pings_ranges, max_n_pings=1000):
+    """ Split data into smaller portions which can be preloaded """
+    splits = []
+    for start, end in valid_pings_ranges:
+        n_splits = np.ceil((end - start) / max_n_pings)
+        split_range = np.linspace(start, end, int(n_splits + 1)).astype(int)
+
+        splits.extend([[split_range[i], split_range[i + 1]] for i in range(len(split_range) - 1)])
+    return np.array(splits)

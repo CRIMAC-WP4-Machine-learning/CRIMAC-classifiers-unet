@@ -17,6 +17,8 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
 """
 
 import numpy as np
+import xarray as xr
+from constants import *
 
 def remove_nan_inf(data, labels, echogram, frequencies, new_value=0.0):
     '''
@@ -27,5 +29,10 @@ def remove_nan_inf(data, labels, echogram, frequencies, new_value=0.0):
     :param new_value:
     :return:
     '''
+    labels[np.invert(np.isfinite(data[0, :, :]))] = LABEL_IGNORE_VAL
     data[np.invert(np.isfinite(data))] = new_value
+    return data, labels, echogram, frequencies
+
+def remove_nan_inf_xr(data, labels, echogram, frequencies, new_value=0.0):
+    data = xr.where(data.isnull(), new_value, data)
     return data, labels, echogram, frequencies
